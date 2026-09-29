@@ -199,7 +199,12 @@ local list_keys = {
 	tcp_stun = true,
 	white_list = true,
 	peer_servers = true,
-	custom_nets = true
+	custom_nets = true,
+	peer_address = true,
+	turn = true,
+	punch_model = true,
+	subnet_mapping = true,
+	tunnel_addr = true
 }
 
 local bool_keys = {

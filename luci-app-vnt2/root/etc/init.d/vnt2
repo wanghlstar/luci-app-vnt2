@@ -2386,9 +2386,29 @@ start_cli_instance() {
 	log_cli 'start command submitted'
 }
 
+# vnt2_web generates a random access token on every start when --token is
+# not passed, which breaks bookmarked URLs. Persist one in UCI instead.
+ensure_web_token() {
+	local cfg="$1"
+	local token
+
+	# Reuse the web_pass option as the access token: vnt2_web only knows
+	# --token, the former remark field was never read by the binary.
+	token="$(trim_value "$(uci -q get ${CONF}.${cfg}.web_pass 2>/dev/null)")"
+	if [ -z "$token" ]; then
+		token="$(od -An -N24 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+		if [ -n "$token" ]; then
+			uci -q set ${CONF}.${cfg}.web_pass="$token"
+			uci commit ${CONF} >/dev/null 2>&1
+			log_web "generated persistent Web access token"
+		fi
+	fi
+	printf '%s' "$token"
+}
+
 start_web_instance() {
 	local cfg="$1"
-	local enabled web_bin web_host web_port web_wan log_level cli_cfg web_conf_base cli_enabled
+	local enabled web_bin web_host web_port web_wan log_level cli_cfg web_conf_base cli_enabled web_token
 
 	migrate_legacy_cli_web_conf
 	config_get_bool enabled "$cfg" "enabled" "0"
@@ -2422,6 +2442,7 @@ start_web_instance() {
 		return 0
 	fi
 
+	web_token="$(ensure_web_token "$cfg")"
 	config_get web_host "$cfg" "web_host" "0.0.0.0"
 	config_get web_port "$cfg" "web_port" "19099"
 	config_get_bool web_wan "$cfg" "web_wan" "0"
@@ -2479,7 +2500,7 @@ start_web_instance() {
 
 	procd_open_instance "vnt2_web"
 	procd_set_param env RUST_LOG="$log_level"
-	procd_set_param command /bin/sh -c "cd /etc || exit 1; exec \"${web_bin}\" --addr \"${web_host}:${web_port}\" --conf \"${WEB_CONF_FILE}\" >>\"${WEB_LOG}\" 2>&1"
+	procd_set_param command /bin/sh -c "cd /etc || exit 1; exec \"${web_bin}\" --addr \"${web_host}:${web_port}\" --token \"${web_token}\" --conf \"${WEB_CONF_FILE}\" >>\"${WEB_LOG}\" 2>&1"
 	procd_set_param stdout 0
 	procd_set_param stderr 0
 	procd_set_param respawn 3600 5 30

@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vnt2
-PKG_VERSION:=2.1.7
+PKG_VERSION:=2.1.8
 PKG_RELEASE:=1
 
 LUCI_TITLE:=luci-app-vnt2 - LuCI support for VNT2

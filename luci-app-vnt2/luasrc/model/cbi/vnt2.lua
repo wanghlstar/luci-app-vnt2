@@ -2117,13 +2117,41 @@ web_conf_path.placeholder = "/etc/config/vnt2_cli_web.toml"
 web_conf_path.default = "/etc/config/vnt2_cli_web.toml"
 web_conf_path.validate = validate_file_path
 
-local web_user = w:taboption("advanced", Value, "web_user", translate("页面备注用户名"),
-	translate("当前原生 vnt2_web 未由本 LuCI 页面接管认证，此处仅作为备注保存"))
-web_user.placeholder = "admin"
-
-local web_pass = w:taboption("advanced", Value, "web_pass", translate("页面备注密码"),
-	translate("当前原生 vnt2_web 未由本 LuCI 页面接管认证，此处仅作为备注保存"))
+-- vnt2_web 只认 --token 一个认证参数（源码确认无用户名/密码），
+-- 这里直接借用 web_pass 字段存放访问令牌。
+local web_pass = w:taboption("advanced", Value, "web_pass", translate("Web 访问令牌"),
+	translate("固定 vnt2_web 的访问令牌；留空启动时自动生成一个 48 位随机值并保存。修改后需重启 Web 客户端生效"))
 web_pass.password = true
+web_pass.placeholder = "留空自动生成"
+
+-- 当前生效的 Web 访问令牌（取自 web_pass 字段）及一键打开链接
+do
+	local web_token_show = w:taboption("advanced", DummyValue, "_web_token_show", translate("当前令牌"))
+	web_token_show.rawhtml = true
+	web_token_show.cfgvalue = function(self, section)
+		local uci = require "luci.model.uci".cursor()
+		local token = ""
+		uci:load("vnt2")
+		local sec = uci:get_first("vnt2", "vnt2_web")
+		if sec then
+			token = (uci:get("vnt2", sec, "web_pass") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		end
+		if token == "" then
+			return "<span class='cbi-value-description'>尚未生成，启动 vnt2_web 后自动创建</span>"
+		end
+		local host = (uci:get("vnt2", sec, "web_host") or "0.0.0.0"):gsub("^%s+", ""):gsub("%s+$", "")
+		local port = (uci:get("vnt2", sec, "web_port") or "19099"):gsub("^%s+", ""):gsub("%s+$", "")
+		if host == "0.0.0.0" or host == "" or host == "::" then
+			host = window.location.hostname
+		end
+		local url = string.format("http://%s:%s/?token=%s", host, port, token)
+		return string.format(
+			"<code style='user-select:all;padding:2px 6px;background:rgba(0,0,0,.06);border-radius:3px;'>%s</code>"
+			.. "&nbsp;&nbsp;<a class='btn cbi-button cbi-button-apply' href='%s' target='_blank' rel='noopener noreferrer'>%s</a>",
+			xml.pcdata(token), xml.pcdata(url), translate("打开 Web 页面")
+		)
+	end
+end
 
 local log_level = w:taboption("advanced", ListValue, "log_level", translate("日志级别"),
 	translate("通过环境变量 RUST_LOG 注入给 vnt2_web"))
