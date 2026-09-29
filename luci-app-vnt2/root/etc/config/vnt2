@@ -13,7 +13,7 @@ config vnt2_cli
 	option device_name ''
 	option password ''
 	option mtu '1400'
-	option tun_name 'vnt-tun'
+	option tun_name 'vnt2-tun'
 	option bind_dev ''
 	option no_punch '0'
 	option rtx '0'

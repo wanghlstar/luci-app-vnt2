@@ -1938,7 +1938,7 @@ configure_network() {
 	local no_nat="$3"
 	local lan_zone wan_zone
 
-	[ -n "$tun_name" ] || tun_name="vnt-tun"
+	[ -n "$tun_name" ] || tun_name="vnt2-tun"
 	lan_zone="$(find_firewall_zone_name "lan" 2>/dev/null || true)"
 	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
 
@@ -2148,7 +2148,7 @@ prepare_client_network_runtime() {
 	fi
 
 	tun_name="$(trim_value "$(toml_get_string "${conf_file}" "tun_name")")"
-	[ -n "$tun_name" ] || tun_name="vnt-tun"
+	[ -n "$tun_name" ] || tun_name="vnt2-tun"
 	no_tun="$(toml_get_bool "${conf_file}" "no_tun")"
 	no_nat="$(toml_get_bool "${conf_file}" "no_nat")"
 	[ -n "$no_nat" ] || no_nat="0"

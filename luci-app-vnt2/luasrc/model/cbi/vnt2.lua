@@ -1438,7 +1438,7 @@ end
 
 local tun_name = s:taboption("advanced", Value, "tun_name", translate("虚拟网卡名称"),
 	translate("多开时请确保不同实例网卡名不冲突"))
-tun_name.placeholder = "vnt-tun"
+tun_name.placeholder = "vnt2-tun"
 
 local mtu = s:taboption("advanced", Value, "mtu", translate("MTU"))
 mtu.placeholder = "1400"

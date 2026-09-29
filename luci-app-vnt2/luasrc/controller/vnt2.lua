@@ -815,7 +815,7 @@ local function summarize_cli_config(uci)
 		network_code = cfg.network_code or "",
 		device_name = cfg.device_name or "",
 		device_id = cfg.device_id or "",
-		tun_name = cfg.tun_name or "vnt-tun",
+		tun_name = cfg.tun_name or "vnt2-tun",
 		no_tun = cfg.no_tun or "0",
 		no_nat = trim(cfg.no_nat) ~= "" and cfg.no_nat or "0",
 		ctrl_port = tonumber(cfg.ctrl_port or "11233") or 11233,
