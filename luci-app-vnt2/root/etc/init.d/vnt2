@@ -2175,7 +2175,7 @@ prepare_cli_runtime() {
 prepare_client_network_runtime() {
 	local cfg="$1"
 	local conf_file="$2"
-	local bind_dev="" forward_list="" forward_raw="" tun_name no_tun no_nat
+	local bind_dev="" forward_list="" forward_raw="" tun_name no_tun no_nat device_mode
 
 	VNT2_FORWARD_LIST=""
 	if [ -n "$cfg" ]; then
@@ -2190,7 +2190,18 @@ prepare_client_network_runtime() {
 
 	tun_name="$(trim_value "$(toml_get_string "${conf_file}" "tun_name")")"
 	[ -n "$tun_name" ] || tun_name="vnt2-tun"
+	# "no_tun" was removed upstream in favour of device_mode = "no|tun|tap";
+	# still honour the legacy key when an old config file is present.
 	no_tun="$(toml_get_bool "${conf_file}" "no_tun")"
+	device_mode="$(trim_value "$(toml_get_string "${conf_file}" "device_mode")")"
+	if [ -n "$device_mode" ]; then
+		if [ "$device_mode" = "no" ]; then
+			no_tun="1"
+		else
+			no_tun="0"
+		fi
+	fi
+	[ -n "$no_tun" ] || no_tun="0"
 	no_nat="$(toml_get_bool "${conf_file}" "no_nat")"
 	[ -n "$no_nat" ] || no_nat="0"
 

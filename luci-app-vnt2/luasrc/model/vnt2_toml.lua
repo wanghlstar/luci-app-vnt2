@@ -31,13 +31,25 @@ local client_defaults = {
 	compress = "0",
 	fec = "0",
 	no_nat = "0",
-	no_tun = "0",
+	device_mode = "tun",
 	allow_mapping = "0",
 	input = {},
 	output = {},
 	port_mapping = {},
 	udp_stun = {},
-	tcp_stun = {}
+	tcp_stun = {},
+	subscription = "",
+	peer_address = {},
+	turn = {},
+	punch_model = {},
+	subnet_mapping = {},
+	tunnel_addr = {},
+	no_broadcast = "0",
+	allow_ikev2 = "0",
+	allow_wireguard = "0",
+	auto_sync_subnet = "0",
+	outbound_interface = "",
+	event_script = ""
 }
 
 local server_defaults = {
@@ -76,13 +88,26 @@ local client_option_map = {
 	compress = "compress",
 	fec = "fec",
 	no_nat = "no_nat",
+	device_mode = "device_mode",
 	no_tun = "no_tun",
 	allow_mapping = "allow_mapping",
 	input = "input",
 	output = "output",
 	port_mapping = "port_mapping",
 	udp_stun = "udp_stun",
-	tcp_stun = "tcp_stun"
+	tcp_stun = "tcp_stun",
+	subscription = "subscription",
+	peer_address = "peer_address",
+	turn = "turn",
+	punch_model = "punch_model",
+	subnet_mapping = "subnet_mapping",
+	tunnel_addr = "tunnel_addr",
+	no_broadcast = "no_broadcast",
+	allow_ikev2 = "allow_ikev2",
+	allow_wireguard = "allow_wireguard",
+	auto_sync_subnet = "auto_sync_subnet",
+	outbound_interface = "outbound_interface",
+	event_script = "event_script"
 }
 
 local web_option_map = {
@@ -101,13 +126,26 @@ local web_option_map = {
 	compress = "compress",
 	fec = "fec",
 	no_nat = "no_nat",
+	device_mode = "device_mode",
 	no_tun = "no_tun",
 	allow_mapping = "allow_mapping",
 	input = "input",
 	output = "output",
 	port_mapping = "port_mapping",
 	udp_stun = "udp_stun",
-	tcp_stun = "tcp_stun"
+	tcp_stun = "tcp_stun",
+	subscription = "subscription",
+	peer_address = "peer_address",
+	turn = "turn",
+	punch_model = "punch_model",
+	subnet_mapping = "subnet_mapping",
+	tunnel_addr = "tunnel_addr",
+	no_broadcast = "no_broadcast",
+	allow_ikev2 = "allow_ikev2",
+	allow_wireguard = "allow_wireguard",
+	auto_sync_subnet = "auto_sync_subnet",
+	outbound_interface = "outbound_interface",
+	event_script = "event_script"
 }
 
 local server_option_map = {
@@ -130,17 +168,21 @@ local server_option_map = {
 }
 
 local client_order = {
-	"network_code", "server", "ip", "device_id", "device_name", "password", "tun_name",
-	"cert_mode", "mtu", "ctrl_port", "tunnel_port", "no_punch", "rtx", "compress",
-	"fec", "no_nat", "no_tun", "allow_mapping", "input", "output", "port_mapping",
-	"udp_stun", "tcp_stun"
+	"subscription", "network_code", "server", "peer_address", "turn", "punch_model", "ip",
+	"rtx", "fec", "no_punch", "no_broadcast", "allow_ikev2", "allow_wireguard", "compress",
+	"input", "subnet_mapping", "output", "auto_sync_subnet", "no_nat", "device_mode",
+	"port_mapping", "allow_mapping", "ctrl_port", "tunnel_addr", "tunnel_port", "mtu",
+	"device_name", "device_id", "tun_name", "outbound_interface", "password", "cert_mode",
+	"event_script", "udp_stun", "tcp_stun"
 }
 
 local web_order = {
-	"network_code", "server", "ip", "device_id", "device_name", "password", "tun_name",
-	"cert_mode", "mtu", "tunnel_port", "no_punch", "rtx", "compress",
-	"fec", "no_nat", "no_tun", "allow_mapping", "input", "output", "port_mapping",
-	"udp_stun", "tcp_stun"
+	"subscription", "network_code", "server", "peer_address", "turn", "punch_model", "ip",
+	"rtx", "fec", "no_punch", "no_broadcast", "allow_ikev2", "allow_wireguard", "compress",
+	"input", "subnet_mapping", "output", "auto_sync_subnet", "no_nat", "device_mode",
+	"port_mapping", "allow_mapping", "ctrl_port", "tunnel_addr", "tunnel_port", "mtu",
+	"device_name", "device_id", "tun_name", "outbound_interface", "password", "cert_mode",
+	"event_script", "udp_stun", "tcp_stun"
 }
 
 local server_order = {
@@ -166,8 +208,11 @@ local bool_keys = {
 	compress = true,
 	fec = true,
 	no_nat = true,
-	no_tun = true,
 	allow_mapping = true,
+	no_broadcast = true,
+	allow_ikev2 = true,
+	allow_wireguard = true,
+	auto_sync_subnet = true,
 	persistence = true
 }
 
@@ -771,6 +816,24 @@ function M.export_uci_to_toml(uci)
 		end
 	end
 	web.ctrl_port = nil
+
+	-- legacy: the UCI option bind_dev maps onto outbound_interface
+	do
+		local legacy_bind = trim(uci:get_first("vnt2", "vnt2_cli", "bind_dev") or "")
+		if legacy_bind ~= "" and trim(cli.outbound_interface or "") == "" then
+			cli.outbound_interface = legacy_bind
+		end
+		if legacy_bind ~= "" and trim(web.outbound_interface or "") == "" then
+			web.outbound_interface = legacy_bind
+		end
+	end
+
+	-- "no_tun" was removed upstream: both vnt2_cli and the vnt2_web UI
+	-- reject it ("use device_mode = no|tun|tap"). Map the legacy UCI flag.
+	cli.device_mode = (cli.no_tun == "1" or cli.no_tun == true) and "no" or "tun"
+	cli.no_tun = nil
+	web.device_mode = cli.device_mode
+	web.no_tun = nil
 
 	cli.output = sanitize_cidr_list(cli.output)
 	web.output = sanitize_cidr_list(web.output)

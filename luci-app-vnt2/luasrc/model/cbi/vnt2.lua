@@ -1208,6 +1208,278 @@ local function validate_cert_mode(self, value)
 	return nil, translate("证书验证模式仅支持 skip、standard 或 finger:指纹")
 end
 
+-- 官方模板新增字段的校验器（peer_address/turn/punch_model/subnet_mapping/
+-- tunnel_addr），移植自上游重写版。包在闭包里避免 Lua 5.1 的 200 局部变量上限。
+local VNT2_VALIDATORS = (function()
+	local V = {}
+
+	V.is_ipv4 = function(value)
+		local count = 0
+		for part in value:gmatch("[^%.]+") do
+			count = count + 1
+			if not part:match("^%d+$") or #part > 3 or tonumber(part) > 255 then
+				return false
+			end
+		end
+		return count == 4 and not value:match("^%.") and not value:match("%.$")
+	end
+
+	V.is_ipv6 = function(value)
+		local function valid_part(part)
+			if part == "" or part:match("^:") or part:match(":$") then
+				return false, 0
+			end
+			local count = 0
+			for group in part:gmatch("[^:]+") do
+				if group ~= "v" and not group:match("^[0-9a-fA-F]+$") then
+					return false, 0
+				end
+				if group ~= "v" and #group > 4 then
+					return false, 0
+				end
+				count = count + 1
+			end
+			return count > 0, count
+		end
+
+		if not value:find(":", 1, true) then
+			return false
+		end
+		local normalized = value
+		if value:find(".", 1, true) then
+			local prefix, suffix = value:match("^(.*:)([^:]+)$")
+			if not prefix or not V.is_ipv4(suffix) then
+				return false
+			end
+			normalized = prefix .. "v:v"
+		end
+		local left, right = normalized:match("^(.-)::(.-)$")
+		if left ~= nil then
+			if normalized:match("::.*::") then
+				return false
+			end
+			local left_ok, left_count = valid_part(left)
+			local right_ok, right_count = valid_part(right)
+			if (left ~= "" and not left_ok) or (right ~= "" and not right_ok) then
+				return false
+			end
+			return (left_count + right_count) < 8
+		end
+		if normalized:match("^:") or normalized:match(":$") then
+			return false
+		end
+		local ok, count = valid_part(normalized)
+		return ok and count == 8
+	end
+
+	V.ipv4_network_key = function(value)
+		local address, prefix = value:match("^(%d+%.%d+%.%d+%.%d+)/(%d+)$")
+		local a, b, c, d = address:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+		local ip = ((tonumber(a) * 256 + tonumber(b)) * 256 + tonumber(c)) * 256 + tonumber(d)
+		local host_size = 2 ^ (32 - tonumber(prefix))
+		return math.floor(ip / host_size) * host_size .. "/" .. prefix
+	end
+
+	V.is_ipv4_or_cidr = function(value)
+		return validate_cidr(nil, value) or trim(value):match("^%d+%.%d+%.%d+%.%d+$")
+	end
+
+	-- 直连节点：不带协议时同时尝试 TCP/UDP，也支持 tcp:// udp:// dynamic://
+	V.validate_peer_item = function(value)
+		value = trim(value)
+		if value == "" then
+			return value
+		end
+		local scheme = value:match("^([a-zA-Z][a-zA-Z0-9+.-]*)://")
+		local address = value
+		if scheme then
+			scheme = scheme:lower()
+			if scheme ~= "tcp" and scheme ~= "udp" and scheme ~= "dynamic" then
+				return nil, translate("直连节点地址协议仅支持 tcp、udp 或 dynamic")
+			end
+			if scheme == "dynamic" then
+				return value:match("^dynamic://.+$") and value or nil, translate("dynamic 地址不能为空")
+			end
+			address = value:gsub("^[a-zA-Z][a-zA-Z0-9+.-]*://", "")
+		end
+		if address:match("^%d+%.%d+%.%d+%.%d+:%d+$")
+			or address:match("^%[[0-9a-fA-F:]+%]:%d+$")
+			or address:match("^[%w._-]+:%d+$") then
+			return value
+		end
+		return nil, translate("直连节点地址格式错误，支持 host:port、IPv4:port、[IPv6]:port")
+	end
+
+	V.validate_peer_address = function(self, value)
+		if type(value) == "table" then
+			local values = normalized_list_values(value)
+			if #values == 0 then
+				return {}
+			end
+			local result = {}
+			for _, item in ipairs(values) do
+				local valid, err = V.validate_peer_item(item)
+				if not valid then
+					return nil, err
+				end
+				if valid ~= "" then
+					result[#result + 1] = valid
+				end
+			end
+			return result
+		end
+		return V.validate_peer_item(value)
+	end
+
+	V.validate_turn_item = function(value)
+		value = trim(value)
+		if value == "" then
+			return value
+		end
+		local target, relay = value:match("^([^,]+),([^,]+)$")
+		if not target or not relay or not V.is_ipv4_or_cidr(target) or not V.is_ipv4(trim(relay)) then
+			return nil, translate("格式错误，应为目标 IP/CIDR,转发服务器 IPv4 地址")
+		end
+		return value
+	end
+
+	V.validate_punch_model_item = function(value)
+		value = trim(value)
+		if value == "" then
+			return value
+		end
+		local target, modes = value:match("^([^,]+),(.+)$")
+		if not target or not V.is_ipv4_or_cidr(target) then
+			return nil, translate("格式错误，应为目标 IP/CIDR,IPv4Tcp,IPv4Udp 等打洞模式")
+		end
+		for mode in modes:gmatch("[^,]+") do
+			if mode ~= "IPv4Tcp" and mode ~= "IPv4Udp" and mode ~= "IPv6Tcp" and mode ~= "IPv6Udp" then
+				return nil, translate("打洞模式仅支持 IPv4Tcp、IPv4Udp、IPv6Tcp、IPv6Udp")
+			end
+		end
+		return value
+	end
+
+	V.validate_subnet_mapping_item = function(value)
+		value = trim(value)
+		if value == "" then
+			return value
+		end
+		local first, second = value:match("^([^,]+),([^,]+)$")
+		if not first or not second or not validate_cidr(nil, first) then
+			return nil, translate("格式错误，应为映射 CIDR,实际 CIDR")
+		end
+		if not validate_cidr(nil, second) then
+			return nil, translate("格式错误，应为映射 CIDR,实际 CIDR")
+		end
+		local _, mapped_prefix = first:match("^(%d+%.%d+%.%d+%.%d+)/(%d+)$")
+		local _, actual_prefix = second:match("^(%d+%.%d+%.%d+%.%d+)/(%d+)$")
+		if tonumber(mapped_prefix) ~= tonumber(actual_prefix) then
+			return nil, translate("映射 CIDR 与实际 CIDR 的前缀长度必须相同")
+		end
+		if V.ipv4_network_key(first) == V.ipv4_network_key(second) then
+			return nil, translate("映射网段与实际网段不能相同")
+		end
+		return value
+	end
+
+	V.validate_subnet_mapping = function(self, value)
+		if type(value) ~= "table" then
+			return V.validate_subnet_mapping_item(value)
+		end
+		local result = {}
+		local mapped_to_actual = {}
+		local actual_to_mapped = {}
+		for _, item in ipairs(normalized_list_values(value)) do
+			local valid, err = V.validate_subnet_mapping_item(item)
+			if not valid then
+				return nil, err
+			end
+			local mapped, actual = valid:match("^([^,]+),([^,]+)$")
+			local mapped_key = V.ipv4_network_key(mapped)
+			local actual_key = V.ipv4_network_key(actual)
+			if mapped_to_actual[mapped_key] and mapped_to_actual[mapped_key] ~= actual_key then
+				return nil, translate("存在冲突的映射网段")
+			end
+			if actual_to_mapped[actual_key] and actual_to_mapped[actual_key] ~= mapped_key then
+				return nil, translate("存在冲突的实际网段映射")
+			end
+			mapped_to_actual[mapped_key] = actual_key
+			actual_to_mapped[mapped_key] = actual_key
+			result[#result + 1] = valid
+		end
+		return result
+	end
+
+	V.validate_tunnel_addr = function(self, value)
+		local values = normalized_list_values(value)
+		local seen_ipv4 = false
+		local seen_ipv6 = false
+		local common_port
+		local result = {}
+
+		for _, item in ipairs(values) do
+			local ipv4, ipv6, port
+			local host, host_port = item:match("^([^:]+):(%d+)$")
+			if host then
+				ipv4 = host:match("^%d+%.%d+%.%d+%.%d+$")
+				port = tonumber(host_port)
+			else
+				host, host_port = item:match("^%[([^%]]+)%]:(%d+)$")
+				ipv6 = host
+				port = tonumber(host_port)
+			end
+			if ipv4 and not V.is_ipv4(ipv4) then
+				ipv4 = nil
+			end
+			if ipv6 and not V.is_ipv6(ipv6) then
+				ipv6 = nil
+			end
+			if not port or port < 0 or port > 65535 or (not ipv4 and not ipv6) then
+				return nil, translate("隧道地址必须为 IPv4:port 或 [IPv6]:port，端口 0 表示自动分配")
+			end
+			if common_port and common_port ~= port then
+				return nil, translate("所有隧道地址必须使用相同端口")
+			end
+			common_port = port
+			if ipv4 then
+				if seen_ipv4 then
+					return nil, translate("隧道地址每种 IP 地址族最多填写一个地址")
+				end
+				seen_ipv4 = true
+			else
+				if seen_ipv6 then
+					return nil, translate("隧道地址每种 IP 地址族最多填写一个地址")
+				end
+				seen_ipv6 = true
+			end
+			result[#result + 1] = item
+		end
+		return #result > 0 and result or value
+	end
+
+	V.validate_dynamic_items = function(item_validator)
+		return function(self, value)
+			if type(value) == "table" then
+				local result = {}
+				for _, item in ipairs(normalized_list_values(value)) do
+					local valid, err = item_validator(item)
+					if not valid then
+						return nil, err
+					end
+					if valid ~= "" then
+						result[#result + 1] = valid
+					end
+				end
+				return result
+			end
+			return item_validator(value)
+		end
+	end
+
+	return V
+end)()
+
 local function bind_dynamiclist(option)
 	option.cfgvalue = function(self, section)
 		local value = AbstractValue.cfgvalue(self, section)
@@ -1348,6 +1620,20 @@ local no_punch = s:taboption("security", Flag, "no_punch", translate("禁用 P2P
 	translate("开启后将优先通过中继或服务端转发"))
 no_punch.rmempty = false
 
+do
+local allow_ikev2 = s:taboption("security", Flag, "allow_ikev2", translate("允许 IKEv2 客户端通信"),
+	translate("允许与 IKEv2 客户端通信，并信任服务端注入的 IKEv2 明文 IPv4 包"))
+allow_ikev2.rmempty = false
+
+local allow_wireguard = s:taboption("security", Flag, "allow_wireguard", translate("允许 WireGuard 客户端通信"),
+	translate("允许与 WireGuard 客户端通信，并信任服务端注入的 WireGuard 明文 IPv4 包"))
+allow_wireguard.rmempty = false
+
+local no_broadcast = s:taboption("security", Flag, "no_broadcast", translate("关闭广播/组播转发"),
+	translate("关闭 IPv4 广播和组播转发（默认开启转发）"))
+no_broadcast.rmempty = false
+end
+
 local input = s:taboption("network", DynamicList, "input", translate("入栈监听规则"),
 	translate("格式：CIDR,目标虚拟IP，例如 192.168.1.0/24,10.26.0.2"))
 input.placeholder = "192.168.1.0/24,10.26.0.2"
@@ -1378,6 +1664,32 @@ no_nat.default = no_nat.disabled
 local no_tun = s:taboption("network", Flag, "no_tun", translate("无 TUN 模式"),
 	translate("启用后不创建虚拟网卡，仅适用于端口映射或流量出口类场景"))
 no_tun.rmempty = false
+
+do
+local subnet_mapping = s:taboption("network", DynamicList, "subnet_mapping", translate("出栈网段映射"),
+	translate("将访问端使用的映射网段转换为真实网段，两侧掩码必须相同；多条规则按最长前缀匹配。例如 192.168.2.0/24,192.168.1.0/24"))
+subnet_mapping.placeholder = "192.168.2.0/24,192.168.1.0/24"
+subnet_mapping.validate = VNT2_VALIDATORS.validate_subnet_mapping
+bind_dynamiclist(subnet_mapping)
+
+local peer_address = s:taboption("network", DynamicList, "peer_address", translate("直连节点地址"),
+	translate("可直连的节点地址；不带协议时同时尝试 TCP 和 UDP，也可用 tcp:// 或 udp:// 指定；dynamic://域名 读取 DNS TXT。地址端口应为对端隧道监听端口"))
+peer_address.placeholder = "1.2.3.4:29873"
+peer_address.validate = VNT2_VALIDATORS.validate_peer_address
+bind_dynamiclist(peer_address)
+
+local turn = s:taboption("network", DynamicList, "turn", translate("优先中转"),
+	translate("指定目标虚拟 IP 或网段的优先中转虚拟 IP；填写网关 IP 时强制走服务器中继，命中目标不参与 P2P 打洞。例如 10.26.0.0/24,10.26.0.2"))
+turn.placeholder = "10.26.0.0/24,10.26.0.2"
+turn.validate = VNT2_VALIDATORS.validate_dynamic_items(VNT2_VALIDATORS.validate_turn_item)
+bind_dynamiclist(turn)
+
+local punch_model = s:taboption("network", DynamicList, "punch_model", translate("P2P 打洞方式"),
+	translate("指定目标允许的打洞方式，同一目标的多条规则会合并；可选 IPv4Tcp、IPv4Udp、IPv6Tcp、IPv6Udp。例如 10.26.0.2,IPv4Udp"))
+punch_model.placeholder = "10.26.0.2,IPv4Udp"
+punch_model.validate = VNT2_VALIDATORS.validate_dynamic_items(VNT2_VALIDATORS.validate_punch_model_item)
+bind_dynamiclist(punch_model)
+end
 
 local vnt2_forward = s:taboption("network", MultiValue, "vnt2_forward", translate("访问控制 / 防火墙转发"),
 	translate("按需自动创建 OpenWrt 防火墙区域与转发规则"))
@@ -1469,6 +1781,14 @@ local tunnel_port = s:taboption("advanced", Value, "tunnel_port", translate("隧
 tunnel_port.placeholder = "0"
 tunnel_port.validate = validate_port_or_zero
 
+
+do
+local tunnel_addr = s:taboption("advanced", DynamicList, "tunnel_addr", translate("隧道监听地址"),
+	translate("P2P 隧道监听地址；IPv4 与 IPv6 最多各一个且必须使用相同端口，端口 0 表示自动分配。与上方“隧道端口”互斥，不要同时填写"))
+tunnel_addr.placeholder = "192.168.1.10:29873"
+tunnel_addr.validate = VNT2_VALIDATORS.validate_tunnel_addr
+bind_dynamiclist(tunnel_addr)
+end
 local bind_dev = s:taboption("advanced", ListValue, "bind_dev", translate("绑定出口网卡"),
 	translate("当前以环境变量形式传递给启动脚本，适合需要指定出口链路的场景"))
 bind_dev:value("", translate("不绑定"))
@@ -1476,6 +1796,20 @@ for _, dev in ipairs(list_net_devices()) do
 	bind_dev:value(dev.iface, dev.iface .. " (" .. dev.ip .. ")")
 end
 
+
+do
+local auto_sync_subnet = s:taboption("advanced", Flag, "auto_sync_subnet", translate("自动同步出口子网"),
+	translate("自动获取并应用其他在线节点的出口子网"))
+auto_sync_subnet.rmempty = false
+
+local event_script = s:taboption("advanced", Value, "event_script", translate("事件脚本"),
+	translate("虚拟网卡创建、掉线重连、IP 变化时调用的外部脚本路径，事件名和参数通过命令行传入"))
+event_script.placeholder = "/usr/bin/vnt-event.sh"
+
+local subscription = s:taboption("advanced", Value, "subscription", translate("订阅配置源"),
+	translate("服务端签发的配置订阅链接（vnt2://...）；本页面填写的字段会覆盖订阅下发的同名字段"))
+subscription.placeholder = "vnt2://join/2/..."
+end
 local info_mode = s:taboption("infos", ListValue, "info_mode", translate("显示模式"))
 info_mode:value("panel", translate("面板说明"))
 info_mode:value("raw", translate("原始输出"))
