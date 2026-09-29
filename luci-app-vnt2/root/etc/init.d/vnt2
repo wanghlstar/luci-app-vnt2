@@ -2,6 +2,7 @@
 
 START=99
 USE_PROCD=1
+EXTRA_COMMANDS="restart_cli restart_web restart_server"
 
 CONF="${CONF:-vnt2}"
 
@@ -2822,6 +2823,53 @@ reload_service() {
 		stop
 		start
 	fi
+}
+
+# ==================== 单实例快速重启 ====================
+# “重启客户端/服务端”按钮使用：只重启对应实例，不影响其他单元。
+# 杀进程后由 procd 按 respawn 参数自动用当前 TOML 重新拉起。
+restart_single_instance() {
+	local stype="$1" binname="$2" start_fn="$3"
+	local cfg enabled pid
+
+	export_toml_from_uci >/dev/null 2>&1
+	config_load "${CONF}"
+
+	cfg="$(get_first_section_id "${stype}")"
+	[ -n "$cfg" ] || {
+		log_download "restart_${binname}: section not found"
+		return 1
+	}
+
+	config_get_bool enabled "$cfg" "enabled" "0"
+	if [ "$enabled" != "1" ]; then
+		log_download "restart_${binname}: not enabled, skip"
+		return 0
+	fi
+
+	for pid in $(pidof "${binname}" 2>/dev/null); do
+		kill "$pid" 2>/dev/null
+	done
+
+	# 进程已不在运行（从未启动或 procd 已放弃重试）时显式启动，
+	# 否则 procd 的 respawn 会在数秒内自动拉起。
+	if ! pidof "${binname}" >/dev/null 2>&1; then
+		log_download "restart_${binname}: not running, starting"
+		"${start_fn}" "$cfg"
+	fi
+	return 0
+}
+
+restart_cli() {
+	restart_single_instance "vnt2_cli" "vnt2_cli" "start_cli_instance"
+}
+
+restart_web() {
+	restart_single_instance "vnt2_web" "vnt2_web" "start_web_instance"
+}
+
+restart_server() {
+	restart_single_instance "vnts2" "vnts2" "start_server_instance"
 }
 
 service_triggers() {

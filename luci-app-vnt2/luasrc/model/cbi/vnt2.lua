@@ -1559,7 +1559,7 @@ restart_btn.inputstyle = "apply"
 restart_btn.description = translate("在未修改参数时快速重启 vnt2_cli")
 restart_btn:depends("enabled", "1")
 restart_btn.write = function()
-	sys.call("/etc/init.d/vnt2 restart >/dev/null 2>&1")
+	sys.call("/etc/init.d/vnt2 restart_cli >/dev/null 2>&1")
 end
 
 local network_code = s:taboption("general", Value, "network_code", translate("网络编号"),
@@ -2057,7 +2057,7 @@ web_restart.inputstyle = "apply"
 web_restart.description = translate("在未修改参数时快速重启 vnt2_web")
 web_restart:depends("enabled", "1")
 web_restart.write = function()
-	sys.call("/etc/init.d/vnt2 restart >/dev/null 2>&1")
+	sys.call("/etc/init.d/vnt2 restart_web >/dev/null 2>&1")
 end
 
 local auto_download_web = w:taboption("general", Flag, "auto_download", translate("自动下载程序"),
@@ -2219,7 +2219,7 @@ server_restart.inputstyle = "apply"
 server_restart.description = translate("快速重启 vnts2")
 server_restart:depends("enabled", "1")
 server_restart.write = function()
-	sys.call("/etc/init.d/vnt2 restart >/dev/null 2>&1")
+	sys.call("/etc/init.d/vnt2 restart_server >/dev/null 2>&1")
 end
 
 local auto_download_server = v:taboption("general", Flag, "auto_download", translate("自动下载程序"),
