@@ -3,6 +3,7 @@ local nixio = require "nixio"
 local util = require "luci.util"
 local xml = require "luci.xml"
 local sys = require "luci.sys"
+local http = require "luci.http"
 local uci = luci.model.uci.cursor()
 local toml = require "luci.model.vnt2_toml"
 
@@ -2142,7 +2143,14 @@ do
 		local host = (uci:get("vnt2", sec, "web_host") or "0.0.0.0"):gsub("^%s+", ""):gsub("%s+$", "")
 		local port = (uci:get("vnt2", sec, "web_port") or "19099"):gsub("^%s+", ""):gsub("%s+$", "")
 		if host == "0.0.0.0" or host == "" or host == "::" then
-			host = window.location.hostname
+			-- 服务端渲染拿不到浏览器地址，用 LAN IP 或 Host 头
+			host = (http.getenv("HTTP_HOST") or ""):match("^%[([^%]]+)%]") or (http.getenv("HTTP_HOST") or ""):match("^([^:]+)") or ""
+			if host == "" then
+				host = (uci:get("network", "lan", "ipaddr") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+			end
+			if host == "" then
+				host = "127.0.0.1"
+			end
 		end
 		local url = string.format("http://%s:%s/?token=%s", host, port, token)
 		return string.format(
