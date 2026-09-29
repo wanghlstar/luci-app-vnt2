@@ -2110,6 +2110,47 @@ configure_server_firewall() {
 	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
 }
 
+configure_cli_tunnel_firewall() {
+	local port="$1"
+	local wan_zone
+
+	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
+
+	uci -q delete firewall.vnt2tunnel_tcp
+	uci -q delete firewall.vnt2tunnel_udp
+
+	if valid_port "$port" && [ -n "$wan_zone" ]; then
+		ensure_firewall_rule "vnt2tunnel_tcp" "vnt2_cli tunnel" "tcp" "$port" "$wan_zone"
+		ensure_firewall_rule "vnt2tunnel_udp" "vnt2_cli tunnel" "udp" "$port" "$wan_zone"
+		log_cli "opened WAN inbound for tunnel port ${port}"
+	fi
+
+	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+cleanup_cli_tunnel_firewall() {
+	uci -q delete firewall.vnt2tunnel_tcp
+	uci -q delete firewall.vnt2tunnel_udp
+	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+}
+
+configure_server_cluster_firewall() {
+	local bind="$1"
+	local port wan_zone
+
+	port="${bind##*:}"
+	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
+
+	uci -q delete firewall.vnts2_cluster
+
+	if valid_port "$port" && [ -n "$wan_zone" ] && bind_allows_external_access "$bind"; then
+		ensure_firewall_rule "vnts2_cluster" "vnts2 cluster" "udp" "$port" "$wan_zone"
+		log_server "opened WAN inbound for cluster port ${port}"
+	fi
+
+	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+}
+
 cleanup_server_firewall() {
 	uci -q delete firewall.vnts2_tcp
 	uci -q delete firewall.vnts2_quic
@@ -2157,6 +2198,7 @@ prepare_client_network_runtime() {
 	VNT2_TUN_NAME="${tun_name}"
 	VNT2_NO_TUN="${no_tun}"
 	VNT2_NO_NAT="${no_nat}"
+	VNT2_TUNNEL_PORT="$(trim_value "$(toml_get_string "${conf_file}" "tunnel_port")")"
 	VNT2_FORWARD_LIST="${forward_list}"
 	return 0
 }
@@ -2214,8 +2256,54 @@ prepare_server_runtime() {
 	[ -n "${VNTS2_QUIC_BIND}" ] || VNTS2_QUIC_BIND="0.0.0.0:29872"
 	[ -n "${VNTS2_WS_BIND}" ] || VNTS2_WS_BIND="0.0.0.0:29872"
 	[ -n "${VNTS2_WEB_BIND}" ] || VNTS2_WEB_BIND="0.0.0.0:29871"
+	VNTS2_SERVER_QUIC_BIND="$(trim_value "$(toml_get_string "${SERVER_CONF_FILE}" "server_quic_bind")")"
 
 	return 0
+}
+
+# Extract the port from a "host:port" / "[v6]:port" bind string.
+bind_port_of() {
+	local bind port
+	bind="$(trim_value "$1")"
+	port="${bind##*:}"
+	case "$port" in
+		''|*[!0-9]*) echo "" ;;
+		*) echo "$port" ;;
+	esac
+}
+
+# True when the port still has non-LISTEN TCP sockets (e.g. TIME_WAIT left
+# behind by a killed process). vnts2/vnt2_web bind without SO_REUSEADDR, so
+# such leftovers make the next bind fail with "Address in use" for up to 60s.
+port_has_stale_tcp() {
+	local port="$1"
+
+	[ -n "$port" ] || return 1
+	awk -v h="$(printf '%04X' "$port")" '
+		FNR>1 {
+			split($2, a, ":")
+			if (toupper(a[2]) == h && $4 != "0A") { found = 1; exit }
+		}
+		END { exit(found ? 0 : 1) }
+	' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
+# Wait until the TCP listeners can be bound again. Usually a no-op; only
+# waits when a restart follows recent traffic on those ports.
+wait_bind_ports_ready() {
+	local port waited
+
+	for port in "$@"; do
+		[ -n "$port" ] || continue
+		waited=0
+		while [ "$waited" -lt 75 ] && port_has_stale_tcp "$port"; do
+			sleep 2
+			waited=$((waited + 2))
+		done
+		if [ "$waited" -gt 0 ]; then
+			log_download "waited ${waited}s for port ${port} to become bindable"
+		fi
+	done
 }
 
 start_cli_instance() {
@@ -2268,6 +2356,8 @@ start_cli_instance() {
 	else
 		cleanup_network
 	fi
+	# The transport listeners exist in both tun and no-tun mode.
+	configure_cli_tunnel_firewall "${VNT2_TUNNEL_PORT}"
 
 	log_cli "starting ${cli_bin} with config ${CLI_CONF_FILE}"
 	procd_open_instance "vnt2_cli"
@@ -2287,7 +2377,7 @@ start_cli_instance() {
 
 start_web_instance() {
 	local cfg="$1"
-	local enabled web_bin web_host web_port web_wan log_level cli_cfg
+	local enabled web_bin web_host web_port web_wan log_level cli_cfg web_conf_base cli_enabled
 
 	migrate_legacy_cli_web_conf
 	config_get_bool enabled "$cfg" "enabled" "0"
@@ -2310,6 +2400,16 @@ start_web_instance() {
 			return 1
 		;;
 	esac
+
+	# vnt2_cli and vnt2_web share one TOML and one device identity; running
+	# both makes the server reject the second registration with a duplicate
+	# IP. The CLI takes precedence when both are enabled.
+	local cli_enabled
+	config_get_bool cli_enabled "$(get_first_section_id "vnt2_cli")" "enabled" "0"
+	if [ "$cli_enabled" = "1" ]; then
+		log_web 'vnt2_cli is enabled, skip vnt2_web (mutually exclusive)'
+		return 0
+	fi
 
 	config_get web_host "$cfg" "web_host" "0.0.0.0"
 	config_get web_port "$cfg" "web_port" "19099"
@@ -2337,12 +2437,41 @@ start_web_instance() {
 
 	configure_web_firewall "$web_host" "$web_port" "$web_wan"
     log_web "using ${web_bin} on ${web_host}:${web_port}, conf=${WEB_CONF_FILE}"
+	# vnt2_web is started with /etc as working directory and resolves its
+	# web-managed instance files inside a relative "vnt_config" directory.
+	# Expose the LuCI-managed TOML there so its own web UI can see, read and
+	# save it (earlier versions left it invisible, reporting "Config file
+	# not found"). A file level link also works when /etc/vnt_config already
+	# exists as a real directory.
+	web_conf_base="$(basename "${WEB_CONF_FILE}")"
+	if [ -n "${web_conf_base}" ]; then
+		mkdir -p /etc/vnt_config >/dev/null 2>&1
+		if [ ! -e "/etc/vnt_config/${web_conf_base}" ]; then
+			if ln -sf "${WEB_CONF_FILE}" "/etc/vnt_config/${web_conf_base}" 2>/dev/null; then
+				log_web "exposed ${WEB_CONF_FILE} in /etc/vnt_config for vnt2_web"
+			fi
+		fi
+	fi
+
+	# vnt2_web records its auto-start config list in the relative file
+	# vnt_current_config.txt, which lands in /etc because of the working
+	# directory above. Keep it on tmpfs via a symlink to avoid flash wear.
+	if [ -f /etc/vnt_current_config.txt ] && [ ! -L /etc/vnt_current_config.txt ]; then
+		mv /etc/vnt_current_config.txt /tmp/vnt_current_config.txt 2>/dev/null
+	fi
+	if [ ! -e /etc/vnt_current_config.txt ]; then
+		ln -sf /tmp/vnt_current_config.txt /etc/vnt_current_config.txt 2>/dev/null && \
+			log_web 'redirected vnt_current_config.txt to /tmp'
+	fi
+
+	wait_bind_ports_ready "$(bind_port_of "${web_host}:${web_port}")"
+
 	procd_open_instance "vnt2_web"
 	procd_set_param env RUST_LOG="$log_level"
 	procd_set_param command /bin/sh -c "cd /etc || exit 1; exec \"${web_bin}\" --addr \"${web_host}:${web_port}\" --conf \"${WEB_CONF_FILE}\" >>\"${WEB_LOG}\" 2>&1"
 	procd_set_param stdout 0
 	procd_set_param stderr 0
-	procd_set_param respawn
+	procd_set_param respawn 3600 5 30
 	procd_set_param file "${WEB_CONF_FILE}"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1048576 1048576"
@@ -2354,7 +2483,7 @@ start_web_instance() {
 
 start_server_instance() {
 	local cfg="$1"
-	local enabled server_bin
+	local enabled server_bin _vnts2_file
 	local open_tcp open_quic open_ws open_web
 
 	config_get_bool enabled "$cfg" "enabled" "0"
@@ -2392,13 +2521,31 @@ start_server_instance() {
 	config_get_bool open_web "$cfg" "open_wan_web" "0"
 
 	configure_server_firewall "${VNTS2_TCP_BIND}" "${VNTS2_QUIC_BIND}" "${VNTS2_WS_BIND}" "${VNTS2_WEB_BIND}" "$open_tcp" "$open_quic" "$open_ws" "$open_web"
+	configure_server_cluster_firewall "${VNTS2_SERVER_QUIC_BIND}"
+
+	# A previous instance killed by a restart leaves TIME_WAIT sockets on the
+	# ports it served; without SO_REUSEADDR the fresh process would fail to
+	# bind and crash-loop until procd gives up. Wait for the ports first.
+	wait_bind_ports_ready "$(bind_port_of "${VNTS2_TCP_BIND}")" "$(bind_port_of "${VNTS2_WEB_BIND}")"
 
 	log_server "starting ${server_bin} with config ${SERVER_CONF_FILE}"
+	# vnts2 keeps its sqlite database and self-signed cert as relative paths
+	# (network_control.db, cert.pem, key.pem). Run it with /etc/config as
+	# working directory so they live with the rest of the persistent
+	# configuration instead of the filesystem root; migrate legacy copies.
+	for _vnts2_file in network_control.db cert.pem key.pem; do
+		if [ -f "/${_vnts2_file}" ] && [ ! -e "/etc/config/${_vnts2_file}" ]; then
+			if mv "/${_vnts2_file}" "/etc/config/${_vnts2_file}" 2>/dev/null; then
+				log_server "migrated /${_vnts2_file} to /etc/config/"
+			fi
+		fi
+	done
+
 	procd_open_instance "vnts2"
-	procd_set_param command /bin/sh -c "exec \"${server_bin}\" --conf \"${SERVER_CONF_FILE}\" >>\"${SERVER_LOG}\" 2>&1"
+	procd_set_param command /bin/sh -c "cd /etc/config || exit 1; exec \"${server_bin}\" --conf \"${SERVER_CONF_FILE}\" >>\"${SERVER_LOG}\" 2>&1"
 	procd_set_param stdout 0
 	procd_set_param stderr 0
-	procd_set_param respawn
+	procd_set_param respawn 3600 5 30
 	procd_set_param file "${SERVER_CONF_FILE}"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1048576 1048576"
@@ -2456,6 +2603,7 @@ stop_service() {
 	cleanup_network
 	cleanup_web_firewall
 	cleanup_server_firewall
+	cleanup_cli_tunnel_firewall
 
 	log_cli 'service stopped'
 	log_web 'service stopped'

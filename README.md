@@ -95,12 +95,23 @@ VPN -> VNT2
 | `/etc/config/vnt2_cli_web.toml` | 客户端与 Web 共用的运行时 TOML（vnt2_web 与 vnt2_cli 读同一份） |
 | `/etc/config/vnts2.toml` | 服务端运行时 TOML |
 | `/usr/bin/vnt2_cli` `vnt2_ctrl` `vnt2_web` `vnts2` | 各模块二进制 |
+| `/etc/config/network_control.db` `cert.pem` `key.pem` | 服务端设备数据库与自签名证书 |
+| `/etc/vnt_config/` | vnt2_web 数据目录（内含托管配置的链接） |
+| `/tmp/vnt_current_config.txt` | vnt2_web 自启配置记录（软链至 /tmp，不写 flash） |
 | `/tmp/vnt2-cli.log` `/tmp/vnt2-web.log` `/tmp/vnts2.log` | 各模块运行日志 |
 | `/tmp/vnt2-download.log` | 下载/安装日志 |
 
 ## 升级说明
 
 从 2.1.0 之前的版本升级时，旧路径 `/vnt_config/vnt2_cli_web.toml` 中的配置会在首次启动时自动迁移到 `/etc/config/vnt2_cli_web.toml`（新路径已存在则不覆盖）。
+
+## 防火墙说明
+
+启动时会自动创建以下规则（按需）：
+
+- **客户端**：`VNT2` 网络区域 + lan/wan 双向 forwarding 规则（可在“访问控制”多选里调整）；指定了固定 `tunnel_port` 时会自动放行该端口的 WAN 入站（tcp+udp），否则使用随机端口无法静态放行
+- **服务端**：`tcp/quic/ws/web` 四个端口各自受“允许 WAN 访问”开关控制；配置了 `server_quic_bind`（集群）时自动放行该 UDP 端口
+- **Web**：19099 端口受“允许 WAN 访问”控制（默认关闭）
 
 ## 使用提示
 

@@ -1251,7 +1251,7 @@ local mutual_exclusion_tip = s:taboption("general", DummyValue, "_mutual_exclusi
 mutual_exclusion_tip.rawhtml = true
 mutual_exclusion_tip.cfgvalue = function()
 	return [[
-<div class="cbi-value-description">CLI 客户端与 Web 客户端互斥，启用其中一个时会自动取消另一个。</div>
+<div class="cbi-value-description">CLI 客户端与 Web 客户端互斥（共用同一配置和设备标识，同时运行会被服务端拒绝注册）；若同时启用，vnt2_cli 优先运行，vnt2_web 将跳过启动。</div>
 ]] .. render_mutual_exclusion_script()
 end
 

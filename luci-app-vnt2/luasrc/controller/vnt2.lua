@@ -713,7 +713,19 @@ local function has_listen_port(port)
 	end
 
 	local hex = string.format("%04X", port)
-	local cmd = string.format([[awk 'NR>1 {split($2,a,":"); if (toupper(a[2])=="%s") {found=1; exit}} END {exit(found?0:1)}' /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null]], hex)
+	-- TCP: only LISTEN (st=0A) counts, otherwise TIME_WAIT leftovers of a
+	-- dead process are mistaken for a running service. UDP has no listen
+	-- state, so any socket entry counts there.
+	local cmd = string.format([[
+awk -v h="%s" '
+	FNR == 1 { is_tcp = (FILENAME ~ /tcp/) ? 1 : 0; next }
+	{
+		split($2, a, ":")
+		if (toupper(a[2]) == h && (is_tcp == 0 || $4 == "0A")) { found = 1; exit }
+	}
+	END { exit(found ? 0 : 1) }
+' /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null
+]], hex)
 	return sys.call(cmd) == 0
 end
 
