@@ -26,7 +26,7 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
-  PACKAGE_NAME: "luci-app-vnt2web"
+  PACKAGE_NAME: "luci-app-vnt2"
   OPENWRT_TARGET: "x86/64"
 
 jobs:
@@ -69,10 +69,10 @@ jobs:
             APP_SOURCE_DIR="."
           elif [ -f "$GITHUB_WORKSPACE/${PACKAGE_NAME}/Makefile" ] && sed 's/\r$//' "$GITHUB_WORKSPACE/${PACKAGE_NAME}/Makefile" | grep -qx "PKG_NAME:=${PACKAGE_NAME}"; then
             APP_SOURCE_DIR="${PACKAGE_NAME}"
-          elif [ -f "$GITHUB_WORKSPACE/luci-app-vnt2web/Makefile" ] && sed 's/\r$//' "$GITHUB_WORKSPACE/luci-app-vnt2web/Makefile" | grep -qx "PKG_NAME:=${PACKAGE_NAME}"; then
-            APP_SOURCE_DIR="luci-app-vnt2web"
-          elif [ -f "$GITHUB_WORKSPACE/luci-app-vnt2web/${PACKAGE_NAME}/Makefile" ] && sed 's/\r$//' "$GITHUB_WORKSPACE/luci-app-vnt2web/${PACKAGE_NAME}/Makefile" | grep -qx "PKG_NAME:=${PACKAGE_NAME}"; then
-            APP_SOURCE_DIR="luci-app-vnt2web/${PACKAGE_NAME}"
+          elif [ -f "$GITHUB_WORKSPACE/luci-app-vnt2/Makefile" ] && sed 's/\r$//' "$GITHUB_WORKSPACE/luci-app-vnt2/Makefile" | grep -qx "PKG_NAME:=${PACKAGE_NAME}"; then
+            APP_SOURCE_DIR="luci-app-vnt2"
+          elif [ -f "$GITHUB_WORKSPACE/luci-app-vnt2/${PACKAGE_NAME}/Makefile" ] && sed 's/\r$//' "$GITHUB_WORKSPACE/luci-app-vnt2/${PACKAGE_NAME}/Makefile" | grep -qx "PKG_NAME:=${PACKAGE_NAME}"; then
+            APP_SOURCE_DIR="luci-app-vnt2/${PACKAGE_NAME}"
           else
             echo "Unable to locate package source directory"
             find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -name Makefile | sort
