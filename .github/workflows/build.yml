@@ -1,4 +1,4 @@
-name: Build luci-app-vnt2web for OpenWrt x86_64
+name: Build luci-app-vnt2 for OpenWrt x86_64
 
 on:
   push:
