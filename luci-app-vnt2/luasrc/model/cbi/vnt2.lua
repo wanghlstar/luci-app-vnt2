@@ -2125,26 +2125,38 @@ local web_pass = w:taboption("advanced", Value, "web_pass", translate("Web 访�
 web_pass.password = true
 web_pass.placeholder = "留空自动生成"
 
--- 当前生效的 Web 访问令牌（取自 web_pass 字段）及一键打开链接
-do
-	local web_token_show = w:taboption("advanced", DummyValue, "_web_token_show", translate("当前令牌"))
-	web_token_show.rawhtml = true
-	web_token_show.cfgvalue = function(self, section)
-		local uci = require "luci.model.uci".cursor()
-		local token = ""
-		uci:load("vnt2")
-		local sec = uci:get_first("vnt2", "vnt2_web")
+-- 令牌由 init 脚本在启动时生成，单独一行展示既占地方又暴露明文。
+-- 有令牌时把“打开 Web 页面”按钮并进输入框那一行；没有令牌就不显示。
+-- 按 cbi/value.htm 的结构自行渲染，才能把按钮放在输入框右侧。
+web_pass.render = function(self, s, scope)
+	if self.optional and not self.section:has_tabs()
+		and not self:cfgvalue(s) and not self:formcreated(s) then
+		return
+	end
+
+	scope = scope or {}
+	scope.section = s
+	scope.cbid = self:cbid(s)
+	local cbid = scope.cbid
+
+	local sec = uci:get_first("vnt2", "vnt2_web")
+	local token = ""
+	if sec then
+		token = (uci:get("vnt2", sec, "web_pass") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	end
+
+	local btn = ""
+	if token ~= "" then
+		local host = "127.0.0.1"
+		local port = "19099"
 		if sec then
-			token = (uci:get("vnt2", sec, "web_pass") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+			host = (uci:get("vnt2", sec, "web_host") or "0.0.0.0"):gsub("^%s+", ""):gsub("%s+$", "")
+			port = (uci:get("vnt2", sec, "web_port") or "19099"):gsub("^%s+", ""):gsub("%s+$", "")
 		end
-		if token == "" then
-			return "<span class='cbi-value-description'>尚未生成，启动 vnt2_web 后自动创建</span>"
-		end
-		local host = (uci:get("vnt2", sec, "web_host") or "0.0.0.0"):gsub("^%s+", ""):gsub("%s+$", "")
-		local port = (uci:get("vnt2", sec, "web_port") or "19099"):gsub("^%s+", ""):gsub("%s+$", "")
 		if host == "0.0.0.0" or host == "" or host == "::" then
 			-- 服务端渲染拿不到浏览器地址，用 LAN IP 或 Host 头
-			host = (http.getenv("HTTP_HOST") or ""):match("^%[([^%]]+)%]") or (http.getenv("HTTP_HOST") or ""):match("^([^:]+)") or ""
+			local hh = http.getenv("HTTP_HOST") or ""
+			host = hh:match("^%[([^%]]+)%]") or hh:match("^([^:]+)") or ""
 			if host == "" then
 				host = (uci:get("network", "lan", "ipaddr") or ""):gsub("^%s+", ""):gsub("%s+$", "")
 			end
@@ -2152,13 +2164,37 @@ do
 				host = "127.0.0.1"
 			end
 		end
-		local url = string.format("http://%s:%s/?token=%s", host, port, token)
-		return string.format(
-			"<code style='user-select:all;padding:2px 6px;background:rgba(0,0,0,.06);border-radius:3px;'>%s</code>"
-			.. "&nbsp;&nbsp;<a class='btn cbi-button cbi-button-apply' href='%s' target='_blank' rel='noopener noreferrer'>%s</a>",
-			xml.pcdata(token), xml.pcdata(url), translate("打开 Web 页面")
-		)
+		btn = string.format(
+			"&nbsp;&nbsp;<a class=\"btn cbi-button cbi-button-apply\" href=\"%s\" target=\"_blank\" rel=\"noopener noreferrer\">%s</a>",
+			xml.pcdata(string.format("http://%s:%s/?token=%s", host, port, token)),
+			xml.pcdata(translate("打开 Web 页面")))
 	end
+
+	local desc = ""
+	if self.description and #self.description > 0 then
+		desc = string.format("<div class=\"cbi-value-description\">%s</div>", self.description)
+	end
+
+	local cls = "cbi-value nowrap"
+	if self.error and self.error[s] then cls = cls .. " cbi-value-error" end
+	if self.last_child then cls = cls .. " cbi-value-last" end
+
+	http.write(string.format(
+		"<div class=\"%s\" id=\"cbi-%s-%s-%s\" data-index=\"%s\" data-depends=\"%s\">"
+		.. "<label class=\"cbi-value-title\" for=\"%s\">%s</label>"
+		.. "<div class=\"cbi-value-field\"><div data-ui-widget=\"%s\"></div>%s%s</div></div>",
+		cls, self.config, s, self.option, tostring(self.index or 1),
+		xml.pcdata(self:deplist2json(s)), cbid, xml.pcdata(self.title or ""),
+		xml.pcdata(util.serialize_json({
+			"Textfield", self:cfgvalue(s) or self.default, {
+				id = cbid, name = cbid, size = self.size,
+				datatype = self.datatype,
+				optional = self.optional or self.rmempty,
+				password = self.password, readonly = self.readonly,
+				maxlength = self.maxlength, placeholder = self.placeholder
+			}
+		})),
+		btn, desc))
 end
 
 local log_level = w:taboption("advanced", ListValue, "log_level", translate("日志级别"),

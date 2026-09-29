@@ -2389,6 +2389,20 @@ start_cli_instance() {
 
 # vnt2_web generates a random access token on every start when --token is
 # not passed, which breaks bookmarked URLs. Persist one in UCI instead.
+# Try several tools: a single missing binary must not yield an empty token,
+# because passing --token "" disables vnt2_web's own random generation and
+# leaves the Web UI with no token at all.
+generate_web_token() {
+	local tok=""
+
+	tok="$(od -An -N24 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+	[ -z "$tok" ] && tok="$(hexdump -vn24 -e '24/1 "%02x"' /dev/urandom 2>/dev/null)"
+	[ -z "$tok" ] && tok="$(head -c 24 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')"
+	[ -z "$tok" ] && tok="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')"
+
+	printf '%s' "$tok"
+}
+
 ensure_web_token() {
 	local cfg="$1"
 	local token
@@ -2397,14 +2411,64 @@ ensure_web_token() {
 	# --token, the former remark field was never read by the binary.
 	token="$(trim_value "$(uci -q get ${CONF}.${cfg}.web_pass 2>/dev/null)")"
 	if [ -z "$token" ]; then
-		token="$(od -An -N24 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+		token="$(generate_web_token)"
 		if [ -n "$token" ]; then
 			uci -q set ${CONF}.${cfg}.web_pass="$token"
 			uci commit ${CONF} >/dev/null 2>&1
 			log_web "generated persistent Web access token"
+		else
+			log_web "token generation failed, letting vnt2_web pick its own"
 		fi
 	fi
 	printf '%s' "$token"
+}
+
+# vnt2_web 以 /etc 为工作目录，只在相对目录 vnt_config/ 下寻找它自己管理的配置
+# 文件。把 LuCI 管理的 TOML 链接过去，它的 Web UI 才能看到、读取和保存
+# （早期版本因此一直报 "Config file not found"）。
+# 必须每次 reload 都重建：reload_service 的 kill 快路径不会调用
+# start_web_instance，链接一旦丢失就再也补不回来。
+ensure_web_config_exposure() {
+	local conf_file="$1" base link
+
+	base="$(basename "${conf_file}")"
+	[ -n "$base" ] || return 0
+	link="/etc/vnt_config/${base}"
+
+	mkdir -p /etc/vnt_config >/dev/null 2>&1
+
+	if [ -f "$link" ] && [ ! -L "$link" ]; then
+		# vnt2_web 的保存走 fs::write，会跟随链接写入目标，正常不会产生真实
+		# 文件。万一出现了，先把内容并回 LuCI 管理的 TOML 再替换，避免丢配置。
+		if [ ! -f "$conf_file" ]; then
+			mv "$link" "$conf_file" 2>/dev/null
+		else
+			log_web "WARNING: ${link} is a regular file, replacing it with a symlink"
+			rm -f "$link" 2>/dev/null
+		fi
+	fi
+
+	# ln -sf 原子替换，避免重建瞬间链接缺失导致 Web UI 报找不到配置
+	if ln -sf "${conf_file}" "$link" 2>/dev/null; then
+		if [ -f "${conf_file}" ]; then
+			log_web "exposed ${conf_file} in /etc/vnt_config for vnt2_web"
+		else
+			log_web "WARNING: ${conf_file} is missing, ${link} is a dangling link"
+		fi
+	else
+		log_web "WARNING: failed to link ${conf_file} into /etc/vnt_config"
+	fi
+
+	# vnt2_web 把自启配置列表写在相对文件 vnt_current_config.txt 里（落在 /etc）。
+	# 用符号链接转到 /tmp 避免写 flash；/tmp 是 tmpfs，重启后会被清空，
+	# 必须补一个空文件，否则 /etc/vnt_current_config.txt 变成悬空链接。
+	if [ -f /etc/vnt_current_config.txt ] && [ ! -L /etc/vnt_current_config.txt ]; then
+		mv /etc/vnt_current_config.txt /tmp/vnt_current_config.txt 2>/dev/null
+	fi
+	[ -e /tmp/vnt_current_config.txt ] || : >/tmp/vnt_current_config.txt 2>/dev/null
+	rm -f /etc/vnt_current_config.txt 2>/dev/null
+	ln -sf /tmp/vnt_current_config.txt /etc/vnt_current_config.txt 2>/dev/null && \
+		log_web 'redirected vnt_current_config.txt to /tmp'
 }
 
 start_web_instance() {
@@ -2443,6 +2507,7 @@ start_web_instance() {
 		return 0
 	fi
 
+	# 仅用于生成并持久化令牌；启动参数由下面的 runner 脚本动态读取。
 	web_token="$(ensure_web_token "$cfg")"
 	config_get web_host "$cfg" "web_host" "0.0.0.0"
 	config_get web_port "$cfg" "web_port" "19099"
@@ -2470,38 +2535,41 @@ start_web_instance() {
 
 	configure_web_firewall "$web_host" "$web_port" "$web_wan"
     log_web "using ${web_bin} on ${web_host}:${web_port}, conf=${WEB_CONF_FILE}"
-	# vnt2_web is started with /etc as working directory and resolves its
-	# web-managed instance files inside a relative "vnt_config" directory.
-	# Expose the LuCI-managed TOML there so its own web UI can see, read and
-	# save it (earlier versions left it invisible, reporting "Config file
-	# not found"). A file level link also works when /etc/vnt_config already
-	# exists as a real directory.
-	web_conf_base="$(basename "${WEB_CONF_FILE}")"
-	if [ -n "${web_conf_base}" ]; then
-		mkdir -p /etc/vnt_config >/dev/null 2>&1
-		if [ ! -e "/etc/vnt_config/${web_conf_base}" ]; then
-			if ln -sf "${WEB_CONF_FILE}" "/etc/vnt_config/${web_conf_base}" 2>/dev/null; then
-				log_web "exposed ${WEB_CONF_FILE} in /etc/vnt_config for vnt2_web"
-			fi
-		fi
-	fi
-
-	# vnt2_web records its auto-start config list in the relative file
-	# vnt_current_config.txt, which lands in /etc because of the working
-	# directory above. Keep it on tmpfs via a symlink to avoid flash wear.
-	if [ -f /etc/vnt_current_config.txt ] && [ ! -L /etc/vnt_current_config.txt ]; then
-		mv /etc/vnt_current_config.txt /tmp/vnt_current_config.txt 2>/dev/null
-	fi
-	if [ ! -e /etc/vnt_current_config.txt ]; then
-		ln -sf /tmp/vnt_current_config.txt /etc/vnt_current_config.txt 2>/dev/null && \
-			log_web 'redirected vnt_current_config.txt to /tmp'
-	fi
+	ensure_web_config_exposure "${WEB_CONF_FILE}"
 
 	wait_bind_ports_ready "$(bind_port_of "${web_host}:${web_port}")"
 
+	# procd_open_instance 只在 start_service（经 rc.common 的 rc_procd 包装）
+	# 里才会提交实例定义；reload_service 和 EXTRA_COMMANDS 里的调用不会提交。
+	# 因此 kill 之后 procd 只会用注册时的旧命令行重启，内嵌在命令行里的令牌、
+	# 端口等参数改了也不生效。改为生成一个 runner 脚本，每次被拉起时重新从
+	# UCI 读取参数，kill + procd 自动重启即可拿到最新配置。
+	WEB_RUN_SCRIPT="/tmp/vnt2_web_run.sh"
+	cat >"${WEB_RUN_SCRIPT}" <<EOF
+#!/bin/sh
+# 由 luci-app-vnt2 生成，请勿手工编辑。
+cd /etc || exit 1
+_cfg='${cfg}'
+_log='${WEB_LOG}'
+_uci='/sbin/uci'
+[ -x "\$_uci" ] || _uci='uci'
+_q() { "\$_uci" -q get "vnt2.\$_cfg.\$1" 2>/dev/null; }
+_bin="\$(_q vnt2_web_bin)";   [ -n "\$_bin" ] || _bin='${web_bin}'
+_host="\$(_q web_host)";      [ -n "\$_host" ] || _host='${web_host}'
+_port="\$(_q web_port)";      [ -n "\$_port" ] || _port='${web_port}'
+_conf="\$(_q web_conf_file)"; [ -n "\$_conf" ] || _conf='${WEB_CONF_FILE}'
+_lvl="\$(_q log_level)";      [ -n "\$_lvl" ] || _lvl='${log_level}'
+RUST_LOG="\$_lvl"; export RUST_LOG
+_t="\$(_q web_pass)"
+if [ -n "\$_t" ]; then
+	exec "\$_bin" --addr "\$_host:\$_port" --token "\$_t" --conf "\$_conf" >>"\$_log" 2>&1
+fi
+exec "\$_bin" --addr "\$_host:\$_port" --conf "\$_conf" >>"\$_log" 2>&1
+EOF
+	chmod 755 "${WEB_RUN_SCRIPT}" 2>/dev/null
+
 	procd_open_instance "vnt2_web"
-	procd_set_param env RUST_LOG="$log_level"
-	procd_set_param command /bin/sh -c "cd /etc || exit 1; exec \"${web_bin}\" --addr \"${web_host}:${web_port}\" --token \"${web_token}\" --conf \"${WEB_CONF_FILE}\" >>\"${WEB_LOG}\" 2>&1"
+	procd_set_param command "${WEB_RUN_SCRIPT}"
 	procd_set_param stdout 0
 	procd_set_param stderr 0
 	procd_set_param respawn 3600 5 30
@@ -2734,6 +2802,10 @@ reload_service() {
 	export_toml_from_uci >/dev/null 2>&1
 	config_load "${CONF}"
 
+	# vnt2_web 只在相对目录 vnt_config/ 下找配置；下面的 kill 快路径不会调用
+	# start_web_instance，所以链接在这里统一重建。
+	ensure_web_config_exposure "$(resolve_web_conf_file "$(get_first_section_id "vnt2_web")")"
+
 	# ---- 服务端单元：配置没变就完全不动，避免影响已连接的设备 ----
 	if [ "$server_changed" = "1" ]; then
 		cfg="$(get_first_section_id "vnts2")"
@@ -2850,6 +2922,8 @@ restart_single_instance() {
 	for pid in $(pidof "${binname}" 2>/dev/null); do
 		kill "$pid" 2>/dev/null
 	done
+
+	ensure_web_config_exposure "$(resolve_web_conf_file "$(get_first_section_id "vnt2_web")")"
 
 	# 进程没在运行时不能直接调 start_*_instance：从 EXTRA_COMMANDS 里
 	# 调 procd_open_instance 不会真正启动实例（procd 只在 start/reload
