@@ -1321,8 +1321,9 @@ input.validate = validate_input_rule
 bind_dynamiclist(input)
 
 local output = s:taboption("network", DynamicList, "output", translate("出栈允许网段"),
-	translate("例如 0.0.0.0/0；用于限制可访问的目标网段"))
+	translate("仅支持 CIDR 格式（例如 192.168.2.0/24 或 0.0.0.0/0），用于限制可访问的目标网段；注意不要填写目标 IP——与上方“入栈监听规则”的格式不同"))
 output.placeholder = "0.0.0.0/0"
+output.validate = validate_cidr
 bind_dynamiclist(output)
 
 local port_mapping = s:taboption("network", DynamicList, "port_mapping", translate("端口映射"),

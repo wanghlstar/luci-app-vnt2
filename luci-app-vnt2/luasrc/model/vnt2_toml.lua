@@ -714,6 +714,21 @@ function M.ensure_toml_files(uci)
 	M.ensure_server_toml_from_uci(uci)
 end
 
+-- vnt2 only accepts plain CIDR entries in "output". A stale UCI value such as
+-- "192.168.2.0/24,10.27.0.7" (the input-rule pair format) makes vnt2_cli abort
+-- with a TOML parse error, so drop malformed entries on export.
+local function sanitize_cidr_list(list)
+	local out = {}
+
+	for _, item in ipairs(normalize_list(list)) do
+		if item:match("^%d+%.%d+%.%d+%.%d+/%d+$") then
+			out[#out + 1] = item
+		end
+	end
+
+	return out
+end
+
 function M.export_uci_to_toml(uci)
 	local client_toml = resolve_client_toml_path(uci)
 	local web_toml = resolve_web_toml_path(uci)
@@ -756,6 +771,9 @@ function M.export_uci_to_toml(uci)
 		end
 	end
 	web.ctrl_port = nil
+
+	cli.output = sanitize_cidr_list(cli.output)
+	web.output = sanitize_cidr_list(web.output)
 
 	for toml_key, uci_key in pairs(server_option_map) do
 		if is_list_key(toml_key) then
