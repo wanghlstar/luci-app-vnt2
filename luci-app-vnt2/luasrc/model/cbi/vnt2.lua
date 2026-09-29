@@ -11,7 +11,15 @@ toml.ensure_toml_files(uci)
 local m = Map("vnt2", translate("VNT2"))
 m.description = translate(
 	'VNT2 是一个简单、高效、可快速组建虚拟局域网的工具。<br>官网：<a href="https://rustvnt.com/" target="_blank">rustvnt.com</a>&nbsp;&nbsp;项目：<a href="https://github.com/vnt-dev/vnt" target="_blank">github.com/vnt-dev/vnt</a>&nbsp;&nbsp;当前 LuCI 适配同时覆盖 vnt2_cli / vnt2_ctrl / vnt2_web / vnts2，适用于 OpenWrt 24.10，其中 CLI 与 Web 共用同一个配置文件 /etc/config/vnt2_cli_web.toml，服务端配置文件为 /etc/config/vnts2.toml。'
-)
+) .. [[<style>
+.vnt2-collapse{border:1px solid #e5e5e5;border-radius:4px;margin:2px 0 10px}
+.vnt2-collapse>summary{cursor:pointer;padding:4px 10px;user-select:none;list-style:none}
+.vnt2-collapse>summary::-webkit-details-marker{display:none}
+.vnt2-collapse-arrow{display:inline-block;width:16px;color:#888;font-size:12px;line-height:1}
+.vnt2-collapse[open] .vnt2-collapse-arrow::before{content:"\25BE"}
+.vnt2-collapse:not([open]) .vnt2-collapse-arrow::before{content:"\25B8"}
+.vnt2-collapse-body{padding:0 10px 8px}
+</style>]]
 
 m:section(SimpleSection).template = "vnt2/vnt2_status"
 
@@ -172,6 +180,17 @@ end
 
 local function render_pre(path)
 	return render_pre_content(fs.readfile(path) or "")
+end
+
+-- 连接信息各面板/原始输出的可收起容器（原生 details + CSS 箭头）
+local function wrap_collapsible(inner_html)
+	if type(inner_html) ~= "string" or inner_html == "" then
+		return inner_html
+	end
+	return "<details class='vnt2-collapse' open>"
+		.. "<summary class='vnt2-collapse-head'><span class='vnt2-collapse-arrow'></span></summary>"
+		.. "<div class='vnt2-collapse-body'>" .. inner_html .. "</div>"
+		.. "</details>"
 end
 
 local function cli_running_now()
@@ -1477,7 +1496,7 @@ local panel_info = s:taboption("infos", DummyValue, "_info_panel_view", translat
 panel_info.rawhtml = true
 panel_info:depends("info_mode", "panel")
 panel_info.cfgvalue = function()
-	return render_cli_info_panel(fs.readfile("/tmp/vnt2-cli_info") or "")
+	return wrap_collapsible(render_cli_info_panel(fs.readfile("/tmp/vnt2-cli_info") or ""))
 end
 
 local panel_ips_btn = s:taboption("infos", Button, "_ips_panel_btn", translate("刷新所有节点列表（面板）"))
@@ -1496,7 +1515,7 @@ local panel_ips = s:taboption("infos", DummyValue, "_ips_panel_view", translate(
 panel_ips.rawhtml = true
 panel_ips:depends("info_mode", "panel")
 panel_ips.cfgvalue = function()
-	return render_cli_table_panel(fs.readfile("/tmp/vnt2-cli_ips") or "", translate("所有节点列表"), "ips")
+	return wrap_collapsible(render_cli_table_panel(fs.readfile("/tmp/vnt2-cli_ips") or "", translate("所有节点列表"), "ips"))
 end
 
 local panel_clients_btn = s:taboption("infos", Button, "_clients_panel_btn", translate("刷新所有设备详情（面板）"))
@@ -1515,7 +1534,7 @@ local panel_clients = s:taboption("infos", DummyValue, "_clients_panel_view", tr
 panel_clients.rawhtml = true
 panel_clients:depends("info_mode", "panel")
 panel_clients.cfgvalue = function()
-	return render_cli_table_panel(fs.readfile("/tmp/vnt2-cli_clients") or "", translate("所有设备详情"), "clients")
+	return wrap_collapsible(render_cli_table_panel(fs.readfile("/tmp/vnt2-cli_clients") or "", translate("所有设备详情"), "clients"))
 end
 
 local panel_route_btn = s:taboption("infos", Button, "_route_panel_btn", translate("刷新路由转发信息（面板）"))
@@ -1534,7 +1553,7 @@ local panel_route = s:taboption("infos", DummyValue, "_route_panel_view", transl
 panel_route.rawhtml = true
 panel_route:depends("info_mode", "panel")
 panel_route.cfgvalue = function()
-	return render_cli_table_panel(fs.readfile("/tmp/vnt2-cli_route") or "", translate("路由转发信息"), "route")
+	return wrap_collapsible(render_cli_table_panel(fs.readfile("/tmp/vnt2-cli_route") or "", translate("路由转发信息"), "route"))
 end
 
 local panel_cmd_btn = s:taboption("infos", Button, "_cmd_panel_btn", translate("刷新本机启动参数（面板）"))
@@ -1553,7 +1572,7 @@ local panel_cmd = s:taboption("infos", DummyValue, "_cmd_panel_view", translate(
 panel_cmd.rawhtml = true
 panel_cmd:depends("info_mode", "panel")
 panel_cmd.cfgvalue = function()
-	return render_pre("/tmp/vnt2-cli_cmd")
+	return wrap_collapsible(render_pre("/tmp/vnt2-cli_cmd"))
 end
 
 local btn1 = s:taboption("infos", Button, "_info_raw", translate("本机设备信息"))
@@ -1572,7 +1591,7 @@ local btn1info = s:taboption("infos", DummyValue, "_info_content")
 btn1info.rawhtml = true
 btn1info:depends("info_mode", "raw")
 btn1info.cfgvalue = function()
-	return render_pre("/tmp/vnt2-cli_info")
+	return wrap_collapsible(render_pre("/tmp/vnt2-cli_info"))
 end
 
 local btn2 = s:taboption("infos", Button, "_ips_raw", translate("所有节点列表"))
@@ -1591,7 +1610,7 @@ local btn2ips = s:taboption("infos", DummyValue, "_ips_content")
 btn2ips.rawhtml = true
 btn2ips:depends("info_mode", "raw")
 btn2ips.cfgvalue = function()
-	return render_pre("/tmp/vnt2-cli_ips")
+	return wrap_collapsible(render_pre("/tmp/vnt2-cli_ips"))
 end
 
 local btn3 = s:taboption("infos", Button, "_clients_raw", translate("所有设备详情"))
@@ -1610,7 +1629,7 @@ local btn3clients = s:taboption("infos", DummyValue, "_clients_content")
 btn3clients.rawhtml = true
 btn3clients:depends("info_mode", "raw")
 btn3clients.cfgvalue = function()
-	return render_pre("/tmp/vnt2-cli_clients")
+	return wrap_collapsible(render_pre("/tmp/vnt2-cli_clients"))
 end
 
 local btn4 = s:taboption("infos", Button, "_route_raw", translate("路由转发信息"))
@@ -1629,7 +1648,7 @@ local btn4route = s:taboption("infos", DummyValue, "_route_content")
 btn4route.rawhtml = true
 btn4route:depends("info_mode", "raw")
 btn4route.cfgvalue = function()
-	return render_pre("/tmp/vnt2-cli_route")
+	return wrap_collapsible(render_pre("/tmp/vnt2-cli_route"))
 end
 
 local btn5 = s:taboption("infos", Button, "_cmd_raw", translate("本机启动参数"))
@@ -1648,7 +1667,7 @@ local btn5cmd = s:taboption("infos", DummyValue, "_cmd_content")
 btn5cmd.rawhtml = true
 btn5cmd:depends("info_mode", "raw")
 btn5cmd.cfgvalue = function()
-	return render_pre("/tmp/vnt2-cli_cmd")
+	return wrap_collapsible(render_pre("/tmp/vnt2-cli_cmd"))
 end
 
 local upload = s:taboption("upload", FileUpload, "upload_file")

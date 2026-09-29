@@ -624,13 +624,6 @@ resolve_v2_release_tag() {
 	tag="$(trim_value "$tag")"
 
 	case "$repo" in
-		vnt-dev/vnt|vnt-dev/vnts)
-			if [ -z "$tag" ] || [ "$tag" = "latest" ]; then
-				echo "2.0.0"
-			else
-				normalize_release_tag "$tag"
-			fi
-		;;
 		*)
 			if [ -n "$tag" ] && [ "$tag" != "latest" ]; then
 				normalize_release_tag "$tag"

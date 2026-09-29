@@ -543,13 +543,6 @@ local function get_vnt2_latest_tag(repo, configured_tag, mirror)
 		repo = "vnt-dev/vnt"
 	end
 
-	if repo == "vnt-dev/vnt" or repo == "vnt-dev/vnts" then
-		if configured_tag ~= "" and configured_tag ~= "latest" then
-			return normalize_display_tag(configured_tag)
-		end
-		return "2.0.0"
-	end
-
 	if configured_tag ~= "" and configured_tag ~= "latest" then
 		return normalize_display_tag(configured_tag)
 	end
