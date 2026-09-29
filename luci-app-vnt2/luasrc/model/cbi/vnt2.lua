@@ -10,7 +10,7 @@ toml.ensure_toml_files(uci)
 
 local m = Map("vnt2", translate("VNT2"))
 m.description = translate(
-	'VNT2 是一个简单、高效、可快速组建虚拟局域网的工具。<br>官网：<a href="https://rustvnt.com/" target="_blank">rustvnt.com</a>&nbsp;&nbsp;项目：<a href="https://github.com/vnt-dev/vnt" target="_blank">github.com/vnt-dev/vnt</a>&nbsp;&nbsp;当前 LuCI 适配同时覆盖 vnt2_cli / vnt2_ctrl / vnt2_web / vnts2，适用于 OpenWrt 24.10，其中 CLI 与 Web 共用同一个配置文件 /vnt_config/vnt2_cli_web.toml，服务端配置文件为 /etc/config/vnts2.toml。'
+	'VNT2 是一个简单、高效、可快速组建虚拟局域网的工具。<br>官网：<a href="https://rustvnt.com/" target="_blank">rustvnt.com</a>&nbsp;&nbsp;项目：<a href="https://github.com/vnt-dev/vnt" target="_blank">github.com/vnt-dev/vnt</a>&nbsp;&nbsp;当前 LuCI 适配同时覆盖 vnt2_cli / vnt2_ctrl / vnt2_web / vnts2，适用于 OpenWrt 24.10，其中 CLI 与 Web 共用同一个配置文件 /etc/config/vnt2_cli_web.toml，服务端配置文件为 /etc/config/vnts2.toml。'
 )
 
 m:section(SimpleSection).template = "vnt2/vnt2_status"
@@ -978,7 +978,7 @@ local function validate_file_path(self, value)
 		return nil, translate("路径不能为空")
 	end
 	if value:sub(1, 1) ~= "/" then
-		return nil, translate("请输入绝对路径，例如 /vnt_config/vnt2_cli_web.toml")
+		return nil, translate("请输入绝对路径，例如 /etc/config/vnt2_cli_web.toml")
 	end
 	return value
 end
@@ -1404,15 +1404,15 @@ vnt2_ctrl_bin.validate = validate_nonempty
 
 local cli_conf_path = s:taboption("advanced", Value, "client_conf_file", translate("CLI 配置文件路径"),
 	translate("vnt2_cli 使用的 TOML 配置文件绝对路径"))
-cli_conf_path.placeholder = "/vnt_config/vnt2_cli_web.toml"
-cli_conf_path.default = "/vnt_config/vnt2_cli_web.toml"
+cli_conf_path.placeholder = "/etc/config/vnt2_cli_web.toml"
+cli_conf_path.default = "/etc/config/vnt2_cli_web.toml"
 cli_conf_path.validate = validate_file_path
 
 local cli_conf_shared_tip = s:taboption("advanced", DummyValue, "_cli_conf_shared_tip")
 cli_conf_shared_tip.rawhtml = true
 cli_conf_shared_tip.cfgvalue = function()
 	return [[
-<div class="cbi-value-description">vnt2_cli 与 vnt2_web 为互斥运行方式，但共用同一个 TOML 配置文件 /vnt_config/vnt2_cli_web.toml；若目录不存在，启动时会自动创建并尽量设置为 777 权限。</div>
+<div class="cbi-value-description">vnt2_cli 与 vnt2_web 为互斥运行方式，但共用同一个 TOML 配置文件 /etc/config/vnt2_cli_web.toml；若目录不存在，启动时会自动创建并设置为 755 权限。</div>
 ]]
 end
 
@@ -1744,8 +1744,8 @@ end
 
 local web_conf_path = w:taboption("advanced", Value, "web_conf_file", translate("Web 配置文件路径"),
 	translate("vnt2_web 使用的 TOML 配置文件绝对路径"))
-web_conf_path.placeholder = "/vnt_config/vnt2_cli_web.toml"
-web_conf_path.default = "/vnt_config/vnt2_cli_web.toml"
+web_conf_path.placeholder = "/etc/config/vnt2_cli_web.toml"
+web_conf_path.default = "/etc/config/vnt2_cli_web.toml"
 web_conf_path.validate = validate_file_path
 
 local web_user = w:taboption("advanced", Value, "web_user", translate("页面备注用户名"),
@@ -1954,7 +1954,7 @@ server_tip.rawhtml = true
 server_tip.cfgvalue = function()
 	return [[
 <div class="cbi-value-description">
-	<div>1. 当前 LuCI 会将 CLI 与 Web 配置共同持久化到同一个 TOML 文件（默认 /vnt_config/vnt2_cli_web.toml），服务端则单独持久化到对应的 TOML 文件，并自动同步到 UCI 表单显示。</div>
+	<div>1. 当前 LuCI 会将 CLI 与 Web 配置共同持久化到同一个 TOML 文件（默认 /etc/config/vnt2_cli_web.toml），服务端则单独持久化到对应的 TOML 文件，并自动同步到 UCI 表单显示。</div>
 	<div>2. TCP / QUIC / WS/WSS / Web 管理页均可独立监听，并可按需开放 WAN 防火墙规则。</div>
 	<div>3. 若启用自动下载，默认会从服务端仓库 Releases 中选择匹配当前架构的压缩包。</div>
 </div>

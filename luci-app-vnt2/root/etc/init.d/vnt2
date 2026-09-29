@@ -14,7 +14,7 @@ CLI_TIME="${CLI_TIME:-/tmp/vnt2_cli_time}"
 WEB_TIME="${WEB_TIME:-/tmp/vnt2_web_time}"
 SERVER_TIME="${SERVER_TIME:-/tmp/vnts2_time}"
 
-CLI_WEB_CONF_DEFAULT="${CLI_WEB_CONF_DEFAULT:-/vnt_config/vnt2_cli_web.toml}"
+CLI_WEB_CONF_DEFAULT="${CLI_WEB_CONF_DEFAULT:-/etc/config/vnt2_cli_web.toml}"
 CLI_CONF_DEFAULT="${CLI_CONF_DEFAULT:-${CLI_WEB_CONF_DEFAULT}}"
 WEB_CONF_DEFAULT="${WEB_CONF_DEFAULT:-${CLI_WEB_CONF_DEFAULT}}"
 SERVER_CONF_DEFAULT="${SERVER_CONF_DEFAULT:-/etc/config/vnts2.toml}"
@@ -216,6 +216,24 @@ ensure_conf_path_ready() {
 	fi
 
 	return 0
+}
+
+# One-time migration of the shared CLI/Web TOML from the legacy root-level
+# /vnt_config directory to /etc/config.
+migrate_legacy_cli_web_conf() {
+	local legacy new
+
+	legacy="/vnt_config/vnt2_cli_web.toml"
+	new="${CLI_WEB_CONF_DEFAULT}"
+
+	[ -f "${legacy}" ] || return 0
+	[ -e "${new}" ] && return 0
+
+	if mkdir -p "${new%/*}" >/dev/null 2>&1 && mv "${legacy}" "${new}" >/dev/null 2>&1; then
+		chmod 600 "${new}" >/dev/null 2>&1
+		log_cli "migrated legacy ${legacy} to ${new}"
+		log_web "migrated legacy ${legacy} to ${new}"
+	fi
 }
 
 resolve_client_conf_file() {
@@ -2211,6 +2229,7 @@ start_cli_instance() {
 	local cfg="$1"
 	local enabled cli_bin ctrl_bin
 
+	migrate_legacy_cli_web_conf
 	config_get_bool enabled "$cfg" "enabled" "0"
 	if [ "$enabled" != "1" ]; then
 		log_cli "vnt2_cli disabled, skip start"
@@ -2277,6 +2296,7 @@ start_web_instance() {
 	local cfg="$1"
 	local enabled web_bin web_host web_port web_wan log_level cli_cfg
 
+	migrate_legacy_cli_web_conf
 	config_get_bool enabled "$cfg" "enabled" "0"
 	if [ "$enabled" != "1" ]; then
 		log_web 'not enabled, skip start'
@@ -2326,7 +2346,7 @@ start_web_instance() {
     log_web "using ${web_bin} on ${web_host}:${web_port}, conf=${WEB_CONF_FILE}"
 	procd_open_instance "vnt2_web"
 	procd_set_param env RUST_LOG="$log_level"
-	procd_set_param command /bin/sh -c "exec \"${web_bin}\" --addr \"${web_host}:${web_port}\" --conf \"${WEB_CONF_FILE}\" >>\"${WEB_LOG}\" 2>&1"
+	procd_set_param command /bin/sh -c "cd /etc || exit 1; exec \"${web_bin}\" --addr \"${web_host}:${web_port}\" --conf \"${WEB_CONF_FILE}\" >>\"${WEB_LOG}\" 2>&1"
 	procd_set_param stdout 0
 	procd_set_param stderr 0
 	procd_set_param respawn

@@ -92,11 +92,15 @@ VPN -> VNT2
 | 路径 | 用途 |
 |------|------|
 | `/etc/config/vnt2` | UCI 配置（三个 section：`vnt2_cli` / `vnt2_web` / `vnts2`） |
-| `/vnt_config/vnt2_cli_web.toml` | 客户端与 Web 共用的运行时 TOML（vnt2_web 与 vnt2_cli 读同一份） |
+| `/etc/config/vnt2_cli_web.toml` | 客户端与 Web 共用的运行时 TOML（vnt2_web 与 vnt2_cli 读同一份） |
 | `/etc/config/vnts2.toml` | 服务端运行时 TOML |
 | `/usr/bin/vnt2_cli` `vnt2_ctrl` `vnt2_web` `vnts2` | 各模块二进制 |
 | `/tmp/vnt2-cli.log` `/tmp/vnt2-web.log` `/tmp/vnts2.log` | 各模块运行日志 |
 | `/tmp/vnt2-download.log` | 下载/安装日志 |
+
+## 升级说明
+
+从 2.1.0 之前的版本升级时，旧路径 `/vnt_config/vnt2_cli_web.toml` 中的配置会在首次启动时自动迁移到 `/etc/config/vnt2_cli_web.toml`（新路径已存在则不覆盖）。
 
 ## 使用提示
 

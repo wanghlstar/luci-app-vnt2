@@ -3,7 +3,7 @@ local util = require "luci.util"
 
 local M = {}
 
-M.DEFAULT_CLIENT_WEB_TOML = "/vnt_config/vnt2_cli_web.toml"
+M.DEFAULT_CLIENT_WEB_TOML = "/etc/config/vnt2_cli_web.toml"
 M.DEFAULT_CLIENT_TOML = M.DEFAULT_CLIENT_WEB_TOML
 M.DEFAULT_WEB_TOML = M.DEFAULT_CLIENT_WEB_TOML
 M.DEFAULT_SERVER_TOML = "/etc/config/vnts2.toml"
