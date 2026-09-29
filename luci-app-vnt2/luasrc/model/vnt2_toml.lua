@@ -641,6 +641,30 @@ function M.write_toml(path, data, order)
 			end
 		end
 	end
+
+	-- 追加不在 order 中的键：vnt2_web 的 Web UI 会写入一些本插件不管理的
+	-- 字段（如 config_name 显示名），若不保留，每次从 UCI 导出都会把它们
+	-- 覆盖掉。
+	do
+		local ordered = {}
+		for _, key in ipairs(order) do
+			ordered[key] = true
+		end
+		local extras = {}
+		for key, value in pairs(data) do
+			if not ordered[key] and type(key) == "string" and key:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+				extras[#extras + 1] = key
+			end
+		end
+		table.sort(extras)
+		for _, key in ipairs(extras) do
+			local encoded = encode_value(key, data[key])
+			if encoded ~= nil then
+				lines[#lines + 1] = string.format("%s = %s", key, encoded)
+			end
+		end
+	end
+
 	lines[#lines + 1] = ""
 	fs.writefile(path, table.concat(lines, "\n"))
 	if fs.access(path) then
@@ -821,6 +845,18 @@ function M.export_uci_to_toml(uci)
 		end
 	end
 	web.ctrl_port = nil
+
+	-- 保留 Web UI 等外部写入、本插件不管理的键（如 config_name 显示名），
+	-- 否则每次导出都会覆盖用户在 vnt2_web Web UI 里的修改。
+	do
+		local existing = M.read_toml(client_toml, {})
+		for key, value in pairs(existing) do
+			if not client_option_map[key] and key ~= "no_tun"
+				and type(key) == "string" and key:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+				cli[key] = value
+			end
+		end
+	end
 
 	-- legacy: the UCI option bind_dev maps onto outbound_interface
 	do
