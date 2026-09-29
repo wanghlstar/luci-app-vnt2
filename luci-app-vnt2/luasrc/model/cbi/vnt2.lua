@@ -1112,6 +1112,21 @@ local function validate_bind_addr(self, value)
 end
 
 local function validate_cidr(self, value)
+	-- DynamicList options hand a table of entries to the validator.
+	if type(value) == "table" then
+		local result = {}
+		for _, item in ipairs(normalized_list_values(value)) do
+			local valid, err = validate_cidr(self, item)
+			if not valid then
+				return nil, err
+			end
+			if valid ~= "" then
+				result[#result + 1] = valid
+			end
+		end
+		return result
+	end
+
 	value = trim(value)
 	if value == "" then
 		return value
