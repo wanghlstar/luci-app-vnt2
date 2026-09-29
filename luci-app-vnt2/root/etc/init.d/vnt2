@@ -3,36 +3,42 @@
 START=99
 USE_PROCD=1
 
-CONF="vnt2"
+CONF="${CONF:-vnt2}"
 
-CLI_LOG="/tmp/vnt2-cli.log"
-WEB_LOG="/tmp/vnt2-web.log"
-SERVER_LOG="/tmp/vnts2.log"
-DOWNLOAD_LOG="/tmp/vnt2-download.log"
+CLI_LOG="${CLI_LOG:-/tmp/vnt2-cli.log}"
+WEB_LOG="${WEB_LOG:-/tmp/vnt2-web.log}"
+SERVER_LOG="${SERVER_LOG:-/tmp/vnts2.log}"
+DOWNLOAD_LOG="${DOWNLOAD_LOG:-/tmp/vnt2-download.log}"
 
-CLI_TIME="/tmp/vnt2_cli_time"
-WEB_TIME="/tmp/vnt2_web_time"
-SERVER_TIME="/tmp/vnts2_time"
+CLI_TIME="${CLI_TIME:-/tmp/vnt2_cli_time}"
+WEB_TIME="${WEB_TIME:-/tmp/vnt2_web_time}"
+SERVER_TIME="${SERVER_TIME:-/tmp/vnts2_time}"
 
-CLI_WEB_CONF_DEFAULT="/vnt_config/vnt2_cli_web.toml"
-CLI_CONF_DEFAULT="${CLI_WEB_CONF_DEFAULT}"
-WEB_CONF_DEFAULT="${CLI_WEB_CONF_DEFAULT}"
-SERVER_CONF_DEFAULT="/etc/config/vnts2.toml"
+CLI_WEB_CONF_DEFAULT="${CLI_WEB_CONF_DEFAULT:-/vnt_config/vnt2_cli_web.toml}"
+CLI_CONF_DEFAULT="${CLI_CONF_DEFAULT:-${CLI_WEB_CONF_DEFAULT}}"
+WEB_CONF_DEFAULT="${WEB_CONF_DEFAULT:-${CLI_WEB_CONF_DEFAULT}}"
+SERVER_CONF_DEFAULT="${SERVER_CONF_DEFAULT:-/etc/config/vnts2.toml}"
 
-LEGACY_DEFAULT_SERVER="tcp://8.163.89.234:29872"
-DEPRECATED_DEFAULT_SERVER="tcp://0.0.0.0:29872"
+LEGACY_DEFAULT_SERVER="${LEGACY_DEFAULT_SERVER:-tcp://8.163.89.234:29872}"
+DEPRECATED_DEFAULT_SERVER="${DEPRECATED_DEFAULT_SERVER:-tcp://0.0.0.0:29872}"
 
-CLI_CONF_FILE=""
-WEB_CONF_FILE=""
-SERVER_CONF_FILE=""
+CLI_CONF_FILE="${CLI_CONF_FILE:-}"
+WEB_CONF_FILE="${WEB_CONF_FILE:-}"
+SERVER_CONF_FILE="${SERVER_CONF_FILE:-}"
 
-DOWNLOAD_CACHE_BASE="/tmp/vnt2-download-cache"
-DOWNLOAD_CLI_STATE="/tmp/vnt2-download-cli.state"
-DOWNLOAD_WEB_STATE="/tmp/vnt2-download-web.state"
-DOWNLOAD_SERVER_STATE="/tmp/vnt2-download-server.state"
-GH_PROXY_PREFIX="https://gh-proxy.com/"
+DOWNLOAD_CACHE_BASE="${DOWNLOAD_CACHE_BASE:-/tmp/vnt2-download-cache}"
+DOWNLOAD_CLI_STATE="${DOWNLOAD_CLI_STATE:-/tmp/vnt2-download-cli.state}"
+DOWNLOAD_WEB_STATE="${DOWNLOAD_WEB_STATE:-/tmp/vnt2-download-web.state}"
+DOWNLOAD_SERVER_STATE="${DOWNLOAD_SERVER_STATE:-/tmp/vnt2-download-server.state}"
+GH_PROXY_PREFIX="${GH_PROXY_PREFIX:-https://gh-proxy.com/}"
 
-INSTALL_BIN_DIR="/usr/bin"
+INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/bin}"
+UPLOAD_DIR="${UPLOAD_DIR:-/etc/vnt2/upload}"
+UPLOAD_PENDING_FILE="${UPLOAD_PENDING_FILE:-/etc/vnt2/upload.pending}"
+
+DOWNLOAD_LAST_TOOL=""
+DOWNLOAD_LAST_URL=""
+DOWNLOAD_RATE_LIMITED=0
 
 . /lib/functions.sh
 . /lib/functions/procd.sh
@@ -49,6 +55,10 @@ looks_like_mojibake() {
 
 normalize_log_text() {
 	printf '%s' "$1" | tr -d '\r\000'
+}
+
+normalize_state_value() {
+	printf '%s' "$1" | tr -d '\r\n\000'
 }
 
 log_cli() {
@@ -76,10 +86,22 @@ log_download() {
 }
 
 ensure_log_files() {
-	[ -f "${CLI_LOG}" ] || : >"${CLI_LOG}"
-	[ -f "${WEB_LOG}" ] || : >"${WEB_LOG}"
-	[ -f "${SERVER_LOG}" ] || : >"${SERVER_LOG}"
-	[ -f "${DOWNLOAD_LOG}" ] || : >"${DOWNLOAD_LOG}"
+	if [ ! -f "${CLI_LOG}" ]; then
+		: >"${CLI_LOG}"
+		chmod 600 "${CLI_LOG}" >/dev/null 2>&1
+	fi
+	if [ ! -f "${WEB_LOG}" ]; then
+		: >"${WEB_LOG}"
+		chmod 600 "${WEB_LOG}" >/dev/null 2>&1
+	fi
+	if [ ! -f "${SERVER_LOG}" ]; then
+		: >"${SERVER_LOG}"
+		chmod 600 "${SERVER_LOG}" >/dev/null 2>&1
+	fi
+	if [ ! -f "${DOWNLOAD_LOG}" ]; then
+		: >"${DOWNLOAD_LOG}"
+		chmod 600 "${DOWNLOAD_LOG}" >/dev/null 2>&1
+	fi
 }
 
 get_first_section_id() {
@@ -159,6 +181,19 @@ bind_allows_external_access() {
 	host_allows_external_access "$bind_host"
 }
 
+valid_port() {
+	local port
+
+	case "$1" in
+		""|*[!0-9]*) return 1 ;;
+	esac
+	# Normalize the value so a zero-padded port such as 019099 is not
+	# silently accepted as a second, different port.
+	port="$(printf '%d' "$1" 2>/dev/null)" || return 1
+	[ -n "$port" ] || return 1
+	[ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
 ensure_conf_path_ready() {
 	local conf_path="$1"
 	local conf_dir
@@ -168,8 +203,12 @@ ensure_conf_path_ready() {
 
 	conf_dir="${conf_path%/*}"
 	if [ -n "$conf_dir" ] && [ "$conf_dir" != "$conf_path" ]; then
-		mkdir -p "$conf_dir" >/dev/null 2>&1
-		chmod 777 "$conf_dir" >/dev/null 2>&1
+		# Only tighten the permissions of a directory this run created: an
+		# existing directory may have been hardened by the administrator.
+		if [ ! -d "$conf_dir" ]; then
+			mkdir -p "$conf_dir" >/dev/null 2>&1 || return 1
+			chmod 755 "$conf_dir" >/dev/null 2>&1 || return 1
+		fi
 	fi
 
 	if [ -e "$conf_path" ]; then
@@ -250,7 +289,14 @@ write_download_state() {
 	local arch="$6"
 	local path="$7"
 
-	message="$(normalize_log_text "$message")"
+	# The state file is parsed as key=value lines, so every value must be
+	# stripped of newlines before it is written.
+	state="$(normalize_state_value "$state")"
+	message="$(normalize_state_value "$message")"
+	asset="$(normalize_state_value "$asset")"
+	tag="$(normalize_state_value "$tag")"
+	arch="$(normalize_state_value "$arch")"
+	path="$(normalize_state_value "$path")"
 
 	cat >"${state_file}" <<EOF
 state=${state}
@@ -288,7 +334,11 @@ EOF
 
 find_uploaded_bin() {
 	local name="$1"
-	for file in "/tmp/${name}" "/tmp/${name//_/-}" "/tmp/${name}.bin"; do
+	local name_dash
+	local file
+
+	name_dash="$(printf '%s' "$name" | tr '_' '-')"
+	for file in "/tmp/${name}" "/tmp/${name_dash}" "/tmp/${name}.bin"; do
 		[ -f "$file" ] && {
 			echo "$file"
 			return 0
@@ -434,33 +484,48 @@ download_file() {
 	local downloader
 	local rc
 	local actual_url
+	local accept_header="application/vnd.github+json, application/octet-stream, */*"
+	local proto_args=""
+
+	if [ "$purpose" = "api" ]; then
+		accept_header="application/vnd.github+json"
+	fi
 
 	downloader="$(get_downloader "$purpose")" || return 1
 	DOWNLOAD_LAST_TOOL="$downloader"
 	DOWNLOAD_LAST_URL=""
+	DOWNLOAD_RATE_LIMITED=0
 
-	for actual_url in $(get_download_url_candidates "$url"); do
+	while IFS= read -r actual_url; do
+		[ -n "$actual_url" ] || continue
 		DOWNLOAD_LAST_URL="$actual_url"
+
+		# Keep an https candidate from being redirected to plain http.
+		proto_args=""
+		case "$actual_url" in
+			https://*) proto_args="--proto =https --proto-redir =https" ;;
+		esac
 
 		case "$downloader" in
 			curl)
 				curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-delay 2 \
 					-A "luci-app-vnt2" \
-					-H "Accept: application/vnd.github+json, application/octet-stream, */*" \
+					-H "Accept: ${accept_header}" \
+					$proto_args \
 					-o "$out" "$actual_url" >/dev/null 2>&1
 				rc=$?
 			;;
 			wget)
 				wget -q --timeout=30 --tries=3 \
 					--header="User-Agent: luci-app-vnt2" \
-					--header="Accept: application/vnd.github+json, application/octet-stream, */*" \
+					--header="Accept: ${accept_header}" \
 					-O "$out" "$actual_url" >/dev/null 2>&1
 				rc=$?
 			;;
 			uclient-fetch)
 				uclient-fetch -q -T 30 \
 					--header "User-Agent: luci-app-vnt2" \
-					--header "Accept: application/vnd.github+json, application/octet-stream, */*" \
+					--header "Accept: ${accept_header}" \
 					-O "$out" "$actual_url" >/dev/null 2>&1
 				rc=$?
 			;;
@@ -470,7 +535,16 @@ download_file() {
 		esac
 
 		[ "$rc" -eq 0 ] && return 0
-	done
+		# An unauthenticated GitHub API request is rate limited to 60 calls
+		# per hour, so surface that case instead of a generic failure.
+		if [ "$purpose" = "api" ] && [ -s "$out" ] && grep -q 'API rate limit' "$out" 2>/dev/null; then
+			DOWNLOAD_RATE_LIMITED=1
+		fi
+		# A failed downloader may leave a partial file behind.
+		rm -f "$out"
+	done <<EOF
+$(get_download_url_candidates "$url")
+EOF
 
 	return 1
 }
@@ -589,10 +663,13 @@ select_download_mirror() {
 	local mirror="$2"
 	local candidate
 
-	for candidate in $(get_download_mirror_candidates "$repo" "$mirror"); do
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] || continue
 		echo "$candidate"
 		return 0
-	done
+	done <<EOF
+$(get_download_mirror_candidates "$repo" "$mirror")
+EOF
 
 	echo "github"
 }
@@ -887,7 +964,8 @@ fetch_release_metadata_from_mirror() {
 		return 1
 	fi
 
-	for candidate in $(get_release_api_candidates "$repo" "$tag" "$effective_mirror"); do
+	while IFS= read -r candidate; do
+		[ -n "$candidate" ] || continue
 		log_download "checking release endpoint: ${candidate}"
 		if download_file "$candidate" "$json_file" "api"; then
 			response_tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json_file" | head -n1)"
@@ -895,8 +973,14 @@ fetch_release_metadata_from_mirror() {
 				echo "$candidate"
 				return 0
 			fi
+		else
+			if [ "${DOWNLOAD_RATE_LIMITED:-0}" = "1" ]; then
+				log_download "release endpoint rate limited: ${candidate}"
+			fi
 		fi
-	done
+	done <<EOF
+$(get_release_api_candidates "$repo" "$tag" "$effective_mirror")
+EOF
 
 	list_file="${json_file}.list"
 	api_url="$(get_release_list_url "$repo" "$effective_mirror")"
@@ -1087,15 +1171,18 @@ validate_asset_file() {
 
 	case "$asset_file" in
 		*.zip)
+			# unzip -t is not a BusyBox unzip option, so list the archive
+			# instead: both implementations support -l.
 			if command -v unzip >/dev/null 2>&1; then
-				unzip -t "$asset_file" >/dev/null 2>&1 && return 0
+				unzip -l "$asset_file" >/dev/null 2>&1 && return 0
 			fi
 			if command -v busybox >/dev/null 2>&1; then
-				busybox unzip -t "$asset_file" >/dev/null 2>&1 && return 0
+				busybox unzip -l "$asset_file" >/dev/null 2>&1 && return 0
 			fi
 			if command -v bsdtar >/dev/null 2>&1; then
 				bsdtar -tf "$asset_file" >/dev/null 2>&1 && return 0
 			fi
+			log_download "no usable unzip tool to validate zip asset ${asset_file}"
 			return 1
 		;;
 		*.tar.gz|*.tgz)
@@ -1118,7 +1205,7 @@ extract_release_asset() {
 	local base
 
 	rm -rf "$dest_dir"
-	mkdir -p "$dest_dir"
+	secure_cache_dir "$dest_dir" || return 1
 
 	case "$asset_file" in
 		*.tar.gz|*.tgz)
@@ -1142,8 +1229,8 @@ locate_extracted_bin() {
 	local name="$2"
 	local alt_dash alt_under found
 
-	alt_dash="${name//_/-}"
-	alt_under="${name//-/_}"
+	alt_dash="$(printf '%s' "$name" | tr '_' '-')"
+	alt_under="$(printf '%s' "$name" | tr '-' '_')"
 
 	found="$(
 		find "$root" -type f \
@@ -1169,20 +1256,32 @@ locate_extracted_bin() {
 
 	case "$name" in
 		vnt2_cli)
-			find "$root" -type f \( -name "vnt-cli" -o -name "vnt_cli" -o -name "vnt-cli-*" -o -name "vnt_cli_*" \) 2>/dev/null | head -n1
-			return 0
+			found="$(find "$root" -type f \( -name "vnt-cli" -o -name "vnt_cli" -o -name "vnt-cli-*" -o -name "vnt_cli_*" \) 2>/dev/null | head -n1)"
+			[ -n "$found" ] && {
+				echo "$found"
+				return 0
+			}
 		;;
 		vnt2_ctrl)
-			find "$root" -type f \( -name "vnt-ctrl" -o -name "vnt_ctrl" -o -name "vnt-ctrl-*" -o -name "vnt_ctrl_*" \) 2>/dev/null | head -n1
-			return 0
+			found="$(find "$root" -type f \( -name "vnt-ctrl" -o -name "vnt_ctrl" -o -name "vnt-ctrl-*" -o -name "vnt_ctrl_*" \) 2>/dev/null | head -n1)"
+			[ -n "$found" ] && {
+				echo "$found"
+				return 0
+			}
 		;;
 		vnt2_web)
-			find "$root" -type f \( -name "vnt-web" -o -name "vnt_web" -o -name "vnt-web-*" -o -name "vnt_web_*" \) 2>/dev/null | head -n1
-			return 0
+			found="$(find "$root" -type f \( -name "vnt-web" -o -name "vnt_web" -o -name "vnt-web-*" -o -name "vnt_web_*" \) 2>/dev/null | head -n1)"
+			[ -n "$found" ] && {
+				echo "$found"
+				return 0
+			}
 		;;
 		vnts2)
-			find "$root" -type f \( -name "vnts" -o -name "vnts-*" -o -name "vnts_*" \) 2>/dev/null | head -n1
-			return 0
+			found="$(find "$root" -type f \( -name "vnts" -o -name "vnts-*" -o -name "vnts_*" \) 2>/dev/null | head -n1)"
+			[ -n "$found" ] && {
+				echo "$found"
+				return 0
+			}
 		;;
 	esac
 
@@ -1273,6 +1372,31 @@ install_bundle_to_usrbin() {
 	return 0
 }
 
+secure_cache_dir() {
+	local dir="$1"
+	local owner
+
+	# The download cache lives in world-writable /tmp: a directory tree that
+	# was pre-seeded by another user, or a symlink pointing somewhere else,
+	# must never be trusted, because its content gets installed as root.
+	if [ -L "$dir" ]; then
+		rm -f "$dir" >/dev/null 2>&1
+	elif [ -e "$dir" ]; then
+		owner="$(stat -c '%u' "$dir" 2>/dev/null)"
+		if [ -n "$owner" ] && [ "$owner" != "0" ]; then
+			rm -rf "$dir" >/dev/null 2>&1
+		fi
+	fi
+
+	mkdir -p "$dir" >/dev/null 2>&1 || return 1
+	# Keep every cache directory root-only, otherwise a local user could
+	# plant a binary that is then installed and executed as root.
+	chmod 700 "$dir" >/dev/null 2>&1 || return 1
+	owner="$(stat -c '%u' "$dir" 2>/dev/null)"
+	[ -z "$owner" ] || [ "$owner" = "0" ] || return 1
+	return 0
+}
+
 cache_bundle_ready() {
 	local extracted_dir="$1"
 	local scope="$2"
@@ -1337,7 +1461,14 @@ auto_download_bundle() {
 	json_file="${cache_dir}/release.json"
 	extracted_dir="${cache_dir}/extracted"
 
-	mkdir -p "$cache_dir"
+	secure_cache_dir "${DOWNLOAD_CACHE_BASE}" || {
+		log_download "failed to secure download cache base ${DOWNLOAD_CACHE_BASE}"
+		return 1
+	}
+	secure_cache_dir "$cache_dir" || {
+		log_download "failed to create cache directory ${cache_dir}"
+		return 1
+	}
 
 	if cache_bundle_ready "$extracted_dir" "$scope"; then
 		log_download "cached bundle found for ${scope}, reuse ${extracted_dir}"
@@ -1362,7 +1493,8 @@ auto_download_bundle() {
 	fi
 
 	log_download "query target release repo=${download_repo} tag=${download_tag} arch=${arch_name} scope=${scope}"
-	for candidate_mirror in $(get_download_mirror_candidates "$download_repo" "$download_mirror"); do
+	while IFS= read -r candidate_mirror; do
+		[ -n "$candidate_mirror" ] || continue
 		write_download_state "$state_file" "querying" "querying releases (${candidate_mirror})" "" "$download_tag" "$arch_name" ""
 		log_download "querying ${scope} release repo=${download_repo} tag=${download_tag} mirror=${candidate_mirror} strategy=${download_mirror} arch=${arch_name}"
 		api_url="$(fetch_release_metadata_from_mirror "$download_repo" "$download_tag" "$json_file" "$candidate_mirror")"
@@ -1488,11 +1620,179 @@ auto_download_bundle() {
 				return 0
 			;;
 		esac
-	done
+	done <<EOF
+$(get_download_mirror_candidates "$download_repo" "$download_mirror")
+EOF
 
 	write_download_state "$state_file" "failed" "all download mirrors failed" "$asset_name" "$download_tag" "$arch_name" ""
 	log_download "all download mirrors failed repo=${download_repo} tag=${download_tag} strategy=${download_mirror} arch=${arch_name} scope=${scope}"
 	return 1
+}
+
+
+# Installs a binary staged by the LuCI upload form. The CBI model validates
+# the upload and writes a marker (path/name/size); this consumes it. Each
+# scope only consumes markers that belong to its own binary.
+process_pending_upload() {
+	local cfg="$1"
+	local option="$2"
+	local scope="$3"
+	local state_file="$4"
+
+	local marker_path marker_name work_dir src_bin target_name installed magic entries ctrl_src ctrl_installed
+
+	[ -f "${UPLOAD_PENDING_FILE}" ] || return 1
+
+	marker_path="$(sed -n 's/^path=//p' "${UPLOAD_PENDING_FILE}" 2>/dev/null | head -n1 | tr -d '\r\n\000')"
+	marker_name="$(sed -n 's/^name=//p' "${UPLOAD_PENDING_FILE}" 2>/dev/null | head -n1 | tr -d '\r\n\000')"
+	[ -n "${marker_path}" ] || {
+		rm -f "${UPLOAD_PENDING_FILE}"
+		return 1
+	}
+
+	# Only consume the upload that belongs to this scope; other scopes pick
+	# up their own marker when their instance is prepared.
+	case "${scope}:${marker_name}" in
+		cli:vnt2_cli*|web:vnt2_web*|server:vnts2*) ;;
+		*) return 1 ;;
+	esac
+
+	case "${marker_path}" in
+		"${UPLOAD_DIR}/incoming."*) ;;
+		*)
+			log_download "upload rejected: invalid staged path"
+			rm -f "${marker_path}"
+			rm -f "${UPLOAD_PENDING_FILE}"
+			return 1
+		;;
+	esac
+
+	if [ ! -f "${marker_path}" ] || [ -L "${marker_path}" ]; then
+		log_download "upload rejected: staged file is missing or not a regular file"
+		write_download_state "${state_file}" "failed" "upload rejected: staged file is missing or not a regular file" "${marker_name:-upload}" "" "$(detect_arch_name)" ""
+		rm -f "${marker_path}"
+		rm -f "${UPLOAD_PENDING_FILE}"
+		return 1
+	fi
+
+	work_dir="${UPLOAD_DIR}/work.$$"
+	rm -rf "${work_dir}" >/dev/null 2>&1
+	if ! mkdir -p "${work_dir}" >/dev/null 2>&1; then
+		log_download "upload failed: unable to create work directory"
+		write_download_state "${state_file}" "failed" "upload failed: unable to create work directory" "${marker_name:-upload}" "" "$(detect_arch_name)" ""
+		rm -f "${marker_path}"
+		rm -f "${UPLOAD_PENDING_FILE}"
+		return 1
+	fi
+	chmod 700 "${work_dir}" >/dev/null 2>&1
+
+	case "${scope}" in
+		cli)	target_name="vnt2_cli" ;;
+		web)	target_name="vnt2_web" ;;
+		server)	target_name="vnts2" ;;
+		*)
+			rm -rf "${work_dir}"
+			rm -f "${UPLOAD_PENDING_FILE}"
+			return 1
+		;;
+	esac
+
+	case "$(printf '%s' "${marker_name}" | tr 'A-Z' 'a-z')" in
+		*.tar.gz|*.tgz)
+			entries="$(tar -tzf "${marker_path}" 2>/dev/null)" || {
+				log_download "upload rejected: invalid tar.gz archive"
+				write_download_state "${state_file}" "failed" "upload rejected: invalid tar.gz archive" "${marker_name}" "" "$(detect_arch_name)" ""
+				rm -rf "${work_dir}"
+				rm -f "${marker_path}"
+				rm -f "${UPLOAD_PENDING_FILE}"
+				return 1
+			}
+			printf '%s\n' "${entries}" | awk '
+				BEGIN { bad = 0 }
+				{
+					entry = $0
+					gsub(/\\/, "/", entry)
+					sub(/^\.\//, "", entry)
+					if (entry ~ /^\// || entry ~ /^[A-Za-z]:\// || entry == ".." ||
+						entry ~ /^\.\.\// || entry ~ /\/\.\.\// || entry ~ /\/\.\.$/) bad = 1
+				}
+				END { exit bad }
+			' || {
+				log_download "upload rejected: unsafe archive paths"
+				write_download_state "${state_file}" "failed" "upload rejected: unsafe archive paths" "${marker_name}" "" "$(detect_arch_name)" ""
+				rm -rf "${work_dir}"
+				rm -f "${marker_path}"
+				rm -f "${UPLOAD_PENDING_FILE}"
+				return 1
+			}
+			tar -xzf "${marker_path}" -C "${work_dir}" >/dev/null 2>&1 || {
+				log_download "upload rejected: archive extraction failed"
+				write_download_state "${state_file}" "failed" "upload rejected: archive extraction failed" "${marker_name}" "" "$(detect_arch_name)" ""
+				rm -rf "${work_dir}"
+				rm -f "${marker_path}"
+				rm -f "${UPLOAD_PENDING_FILE}"
+				return 1
+			}
+			src_bin="$(locate_extracted_bin "${work_dir}" "${target_name}")"
+			if [ -z "${src_bin}" ]; then
+				log_download "upload rejected: archive does not contain ${target_name}"
+				write_download_state "${state_file}" "failed" "upload rejected: archive does not contain ${target_name}" "${marker_name}" "" "$(detect_arch_name)" ""
+				rm -rf "${work_dir}"
+				rm -f "${marker_path}"
+				rm -f "${UPLOAD_PENDING_FILE}"
+				return 1
+			fi
+		;;
+		*)
+			src_bin="${marker_path}"
+		;;
+	esac
+
+	magic="$(od -An -tx1 -N4 "${src_bin}" 2>/dev/null | tr -d '[:space:]')"
+	if [ "${magic}" != "7f454c46" ]; then
+		log_download "upload rejected: ${target_name} is not an ELF binary"
+		write_download_state "${state_file}" "failed" "upload rejected: ${target_name} is not an ELF binary" "${marker_name}" "" "$(detect_arch_name)" ""
+		rm -rf "${work_dir}"
+		rm -f "${marker_path}"
+		rm -f "${UPLOAD_PENDING_FILE}"
+		return 1
+	fi
+
+	installed="$(install_binary_to_usrbin "${src_bin}" "${target_name}" 2>/dev/null)"
+	if [ -z "${installed}" ] || ! ensure_exec "${installed}"; then
+		log_download "upload failed: unable to install ${target_name}"
+		write_download_state "${state_file}" "failed" "upload failed: unable to install ${target_name}" "${marker_name}" "" "$(detect_arch_name)" ""
+		rm -rf "${work_dir}"
+		rm -f "${marker_path}"
+		rm -f "${UPLOAD_PENDING_FILE}"
+		return 1
+	fi
+
+	uci -q set ${CONF}.${cfg}.${option}="${installed}"
+	# The client also needs vnt2_ctrl for its info panels; install it from
+	# the same archive when present.
+	if [ "${scope}" = "cli" ]; then
+		ctrl_src=""
+		case "$(printf '%s' "${marker_name}" | tr 'A-Z' 'a-z')" in
+			*.tar.gz|*.tgz)
+				ctrl_src="$(locate_extracted_bin "${work_dir}" "vnt2_ctrl")"
+			;;
+		esac
+		if [ -n "${ctrl_src}" ]; then
+			ctrl_installed="$(install_binary_to_usrbin "${ctrl_src}" "vnt2_ctrl" 2>/dev/null)"
+			if [ -n "${ctrl_installed}" ] && ensure_exec "${ctrl_installed}"; then
+				uci -q set ${CONF}.${cfg}.vnt2_ctrl_bin="${ctrl_installed}"
+			fi
+		fi
+	fi
+	uci commit ${CONF} >/dev/null 2>&1
+
+	write_download_state "${state_file}" "success" "uploaded binary installed to ${INSTALL_BIN_DIR}" "${target_name}" "" "$(detect_arch_name)" "${installed}"
+	log_download "${scope} uploaded binary installed: ${installed}"
+	rm -rf "${work_dir}" >/dev/null 2>&1
+	rm -f "${marker_path}" >/dev/null 2>&1
+	rm -f "${UPLOAD_PENDING_FILE}" >/dev/null 2>&1
+	return 0
 }
 
 prepare_binary() {
@@ -1509,6 +1809,14 @@ prepare_binary() {
 	if ensure_exec "$bin"; then
 		echo "$bin"
 		return 0
+	fi
+
+	if process_pending_upload "$cfg" "$option" "$scope" "$state_file"; then
+		bin="$(uci -q get ${CONF}.${cfg}.${option})"
+		if ensure_exec "$bin"; then
+			echo "$bin"
+			return 0
+		fi
 	fi
 
 	if auto_download_bundle "$cfg" "$scope" "$state_file"; then
@@ -1617,7 +1925,7 @@ configure_network() {
 	local tun_name="$1"
 	local forward_list="$2"
 	local no_nat="$3"
-	local lan_zone wan_zone enable_ip_forward="${no_nat:-0}"
+	local lan_zone wan_zone
 
 	[ -n "$tun_name" ] || tun_name="vnt-tun"
 	lan_zone="$(find_firewall_zone_name "lan" 2>/dev/null || true)"
@@ -1699,9 +2007,18 @@ configure_network() {
 		;;
 	esac
 
-	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
-	[ "$enable_ip_forward" = "0" ] || sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+	if [ -n "$(uci changes network)" ]; then
+		uci commit network
+		/etc/init.d/network reload >/dev/null 2>&1
+	fi
+	if [ -n "$(uci changes firewall)" ]; then
+		uci commit firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+	# Zone forwarding rules above only take effect with IP forwarding enabled,
+	# regardless of whether NAT/masq is active for the VNT2 zone.
+	sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+	return 0
 }
 
 cleanup_network() {
@@ -1740,7 +2057,7 @@ configure_web_firewall() {
 	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
 
 	uci -q delete firewall.vnt2web
-	if [ "$wan" = "1" ] && [ -n "$port" ] && [ -n "$wan_zone" ] && host_allows_external_access "$host"; then
+	if [ "$wan" = "1" ] && valid_port "$port" && [ -n "$wan_zone" ] && host_allows_external_access "$host"; then
 		ensure_firewall_rule "vnt2web" "vnt2_web" "tcp" "$port" "$wan_zone"
 	fi
 	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
@@ -1774,10 +2091,10 @@ configure_server_firewall() {
 	uci -q delete firewall.vnts2_ws
 	uci -q delete firewall.vnts2_web
 
-	[ "$open_tcp" = "1" ] && [ -n "$tcp_port" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$tcp_bind" && ensure_firewall_rule "vnts2_tcp" "vnts2_tcp" "tcp" "$tcp_port" "$wan_zone"
-	[ "$open_quic" = "1" ] && [ -n "$quic_port" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$quic_bind" && ensure_firewall_rule "vnts2_quic" "vnts2_quic" "udp" "$quic_port" "$wan_zone"
-	[ "$open_ws" = "1" ] && [ -n "$ws_port" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$ws_bind" && ensure_firewall_rule "vnts2_ws" "vnts2_ws" "tcp" "$ws_port" "$wan_zone"
-	[ "$open_web" = "1" ] && [ -n "$web_port" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$web_bind" && ensure_firewall_rule "vnts2_web" "vnts2_web" "tcp" "$web_port" "$wan_zone"
+	valid_port "$tcp_port" && [ "$open_tcp" = "1" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$tcp_bind" && ensure_firewall_rule "vnts2_tcp" "vnts2_tcp" "tcp" "$tcp_port" "$wan_zone"
+	valid_port "$quic_port" && [ "$open_quic" = "1" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$quic_bind" && ensure_firewall_rule "vnts2_quic" "vnts2_quic" "udp" "$quic_port" "$wan_zone"
+	valid_port "$ws_port" && [ "$open_ws" = "1" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$ws_bind" && ensure_firewall_rule "vnts2_ws" "vnts2_ws" "tcp" "$ws_port" "$wan_zone"
+	valid_port "$web_port" && [ "$open_web" = "1" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$web_bind" && ensure_firewall_rule "vnts2_web" "vnts2_web" "tcp" "$web_port" "$wan_zone"
 
 	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
 }
@@ -1925,6 +2242,15 @@ start_cli_instance() {
 		return 1
 	fi
 
+	# The binary path comes from UCI and is interpolated into a shell command
+	# line below, so restrict it to a sane absolute path charset.
+	case "$cli_bin" in
+		""|*..*|*[!A-Za-z0-9._/-]*|[!/]*)
+			log_cli 'start failed: unsafe vnt2_cli binary path'
+			return 1
+		;;
+	esac
+
 	if [ "${VNT2_NO_TUN}" != "1" ]; then
 		configure_network "${VNT2_TUN_NAME}" "${VNT2_FORWARD_LIST}" "${VNT2_NO_NAT}"
 	else
@@ -1963,9 +2289,18 @@ start_web_instance() {
 		return 1
 	}
 
+	# The binary path comes from UCI and is interpolated into a shell command
+	# line below, so restrict it to a sane absolute path charset.
+	case "$web_bin" in
+		""|*..*|*[!A-Za-z0-9._/-]*|[!/]*)
+			log_web 'start failed: unsafe vnt2_web binary path'
+			return 1
+		;;
+	esac
+
 	config_get web_host "$cfg" "web_host" "0.0.0.0"
 	config_get web_port "$cfg" "web_port" "19099"
-	config_get_bool web_wan "$cfg" "web_wan" "1"
+	config_get_bool web_wan "$cfg" "web_wan" "0"
 	config_get log_level "$cfg" "log_level" "info"
 
 	WEB_CONF_FILE="$(resolve_web_conf_file "$cfg")"
@@ -2016,15 +2351,27 @@ start_server_instance() {
 	fi
 
 	log_server 'start requested'
+
+	# Validate the server config before prepare_binary: downloading the
+	# binary can take minutes and must not delay a config error.
+	if ! prepare_server_runtime "$cfg"; then
+		log_server "server runtime preparation failed"
+		return 1
+	fi
+
 	server_bin="$(prepare_binary "$cfg" "vnts2_bin" "/usr/bin/vnts2" "vnts2" "$DOWNLOAD_SERVER_STATE" "server")" || {
 		log_server "start failed: missing usable vnts2 binary"
 		return 1
 	}
 
-	if ! prepare_server_runtime "$cfg"; then
-		log_server "server runtime preparation failed"
-		return 1
-	fi
+	# The binary path comes from UCI and is interpolated into a shell command
+	# line below, so restrict it to a sane absolute path charset.
+	case "$server_bin" in
+		""|*..*|*[!A-Za-z0-9._/-]*|[!/]*)
+			log_server 'start failed: unsafe vnts2 binary path'
+			return 1
+		;;
+	esac
 
 	config_get_bool open_tcp "$cfg" "open_wan_tcp" "0"
 	config_get_bool open_quic "$cfg" "open_wan_quic" "0"

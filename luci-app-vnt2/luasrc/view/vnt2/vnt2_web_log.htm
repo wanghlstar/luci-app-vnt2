@@ -7,7 +7,7 @@ local log_content = textutil.read_log_file(log_file)
 <script type="text/javascript">
 //<![CDATA[
 	function clear_log() {
-		XHR.get('<%=url([[admin]], [[vpn]], [[vnt2]], [[clear_web_log]])%>', null, function(x, data) {
+		XHR.post('<%=url([[admin]], [[vpn]], [[vnt2]], [[clear_web_log]])%>', { token: '<%=pcdata(token)%>' }, function(x, data) {
 			if (x && x.status == 200) {
 				var log_area = document.getElementById('log_textarea');
 				log_area.value = "";
@@ -30,5 +30,5 @@ local log_content = textutil.read_log_file(log_file)
 <fieldset class="cbi-section" id="_log_fieldset">
 	<input type="checkbox" id="checkbox1" style="vertical-align:middle;height:auto;" checked="checked" /><%:自动刷新%>
 	<input class="cbi-button cbi-input-remove" type="button" onclick="clear_log()" value="<%:清除日志%>" />
-	<textarea id="log_textarea" class="cbi-input-textarea" style="width: 100%; margin-top: 10px;" data-update="change" rows="30" wrap="off" readonly="readonly"><%=log_content%></textarea>
+	<textarea id="log_textarea" class="cbi-input-textarea" style="width: 100%; margin-top: 10px;" data-update="change" rows="30" wrap="off" readonly="readonly"><% write(pcdata(log_content)) %></textarea>
 </fieldset>

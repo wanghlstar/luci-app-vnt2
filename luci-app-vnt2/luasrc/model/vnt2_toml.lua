@@ -289,26 +289,120 @@ local function normalize_client_server_list(value)
 	return out
 end
 
-local function toml_escape(s)
-	return tostring(s or ""):gsub("\\", "\\\\"):gsub('"', '\\"')
-end
+-- Control characters other than \n \r \t that must be escaped as \uXXXX
+-- inside a TOML basic string. Built via string.char to avoid Lua pattern
+-- escaping pitfalls.
+local TOML_CONTROL_CHARS = "[" .. string.char(
+	1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 14, 15, 16, 17, 18, 19, 20,
+	21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+) .. "]"
 
-local function toml_unescape(s)
+local function toml_escape(s)
 	s = tostring(s or "")
-	s = s:gsub('\\"', '"')
-	s = s:gsub("\\\\", "\\")
+	s = s:gsub("\\", "\\\\")
+	s = s:gsub('"', '\\"')
+	s = s:gsub("\n", "\\n")
+	s = s:gsub("\r", "\\r")
+	s = s:gsub("\t", "\\t")
+	s = s:gsub(TOML_CONTROL_CHARS, function(c)
+		return string.format("\\u%04X", string.byte(c))
+	end)
 	return s
 end
 
+-- Single pass scanner so that escape sequences are decoded exactly once and
+-- escape(...) -> unescape(...) round trips (a naive chain of gsub calls would
+-- turn "\\n" into a real newline).
+local function toml_unescape(s)
+	s = tostring(s or "")
+	local out = {}
+	local i = 1
+	local len = #s
+
+	while i <= len do
+		local c = s:sub(i, i)
+		if c == "\\" and i < len then
+			local n = s:sub(i + 1, i + 1)
+			if n == "n" then
+				out[#out + 1] = "\n"
+				i = i + 2
+			elseif n == "r" then
+				out[#out + 1] = "\r"
+				i = i + 2
+			elseif n == "t" then
+				out[#out + 1] = "\t"
+				i = i + 2
+			elseif n == "u" then
+				local hex = s:sub(i + 2, i + 5)
+				if hex:match("^%x%x%x%x$") then
+					local code = tonumber(hex, 16)
+					out[#out + 1] = code < 128 and string.char(code) or "?"
+					i = i + 6
+				else
+					out[#out + 1] = c
+					i = i + 1
+				end
+			elseif n == '"' then
+				out[#out + 1] = '"'
+				i = i + 2
+			elseif n == "\\" then
+				out[#out + 1] = "\\"
+				i = i + 2
+			else
+				out[#out + 1] = c
+				i = i + 1
+			end
+		else
+			out[#out + 1] = c
+			i = i + 1
+		end
+	end
+
+	return table.concat(out)
+end
+
+-- Quote aware scanner: values may contain escaped quotes (") so a plain
+-- "..." gmatch pattern would split a single item into several.
 local function parse_array(inner)
 	local out = {}
+	local pos = 1
 	inner = trim(inner)
 	if inner == "" then
 		return out
 	end
 
-	for item in inner:gmatch('"(.-)"') do
-		out[#out + 1] = toml_unescape(item)
+	while pos <= #inner do
+		while pos <= #inner and inner:sub(pos, pos):match("[%s,]") do
+			pos = pos + 1
+		end
+		if pos > #inner then
+			break
+		end
+
+		if inner:sub(pos, pos) ~= '"' then
+			return out
+		end
+
+		local start = pos + 1
+		local i = start
+		local escaped = false
+		while i <= #inner do
+			local char = inner:sub(i, i)
+			if escaped then
+				escaped = false
+			elseif char == "\\" then
+				escaped = true
+			elseif char == '"' then
+				break
+			end
+			i = i + 1
+		end
+		if i > #inner then
+			return out
+		end
+
+		out[#out + 1] = toml_unescape(inner:sub(start, i - 1))
+		pos = i + 1
 	end
 
 	return out
@@ -323,6 +417,17 @@ local function encode_custom_nets(value)
 	end
 
 	return table.concat(lines, "\n")
+end
+
+-- Entries of the [custom_nets] table are plain quoted scalars, so they are
+-- decoded directly instead of going through parse_value(), which returns a
+-- table for list keys and would end up as "table: 0x..." here.
+local function parse_custom_net_entry(raw)
+	local quoted = raw:match('^"(.*)"$')
+	if quoted ~= nil then
+		return toml_unescape(quoted)
+	end
+	return trim(raw)
 end
 
 local function encode_value(key, value)
@@ -345,10 +450,14 @@ local function encode_value(key, value)
 	end
 
 	if is_number_key(key) then
-		if value == "" then
-			value = "0"
+		-- An empty or non numeric value must not be written as 0: mtu = 0 or
+		-- tunnel_port = 0 make the daemon unusable. Returning nil lets
+		-- write_toml() drop the key so the program default applies.
+		local number = tonumber(trim(value))
+		if not number then
+			return nil
 		end
-		return tostring(tonumber(value) or 0)
+		return tostring(number)
 	end
 
 	return '"' .. toml_escape(value) .. '"'
@@ -395,8 +504,9 @@ end
 
 function M.read_toml(path, defaults)
 	local data = clone_defaults(defaults or {})
-	local current_section = ""
 	local canonical_seen = {}
+	local in_section = false
+	local in_custom_nets = false
 
 	if not fs.access(path) then
 		return data
@@ -406,16 +516,20 @@ function M.read_toml(path, defaults)
 	for line in content:gmatch("[^\r\n]+") do
 		local clean = trim(line:gsub("#.*$", ""))
 		if clean ~= "" then
+			-- write_toml() emits a flat "key = value" document, so only the
+			-- [custom_nets] table belongs to the schema. Any other [section]
+			-- header opens a nested table: the header and every key below it
+			-- are ignored instead of overwriting the top level values.
 			local section = clean:match("^%[([%w_]+)%]$")
 			if section then
-				current_section = section
-			else
+				in_section = true
+				in_custom_nets = (section == "custom_nets")
+			elseif (not in_section) or in_custom_nets then
 				local key, raw = clean:match("^([%w_]+)%s*=%s*(.-)%s*$")
 				if key then
-					if current_section == "custom_nets" then
+					if in_custom_nets then
 						data.custom_nets = data.custom_nets or {}
-						local value = parse_value("custom_nets", raw)
-						value = trim(value)
+						local value = parse_custom_net_entry(raw)
 						if value ~= "" then
 							data.custom_nets[#data.custom_nets + 1] = value
 						end
@@ -468,9 +582,12 @@ function M.write_toml(path, data, order)
 					end
 				end
 
-				if keep then
-					lines[#lines + 1] = string.format("%s = %s", key, encode_value(key, value))
+			if keep then
+				local encoded = encode_value(key, value)
+				if encoded ~= nil then
+					lines[#lines + 1] = string.format("%s = %s", key, encoded)
 				end
+			end
 			end
 		end
 	end

@@ -1,7 +1,7 @@
-local http = require "luci.http"
 local fs = require "nixio.fs"
 local nixio = require "nixio"
 local util = require "luci.util"
+local xml = require "luci.xml"
 local sys = require "luci.sys"
 local uci = luci.model.uci.cursor()
 local toml = require "luci.model.vnt2_toml"
@@ -167,7 +167,7 @@ local function render_pre_content(content)
 	if content == "" then
 		content = translate("暂无数据")
 	end
-	return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. util.pcdata(content) .. "</pre>"
+	return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. xml.pcdata(content) .. "</pre>"
 end
 
 local function render_pre(path)
@@ -268,7 +268,7 @@ local function normalize_cli_output(content)
 end
 
 local function html_escape_keep_br(value)
-	return util.pcdata(value or ""):gsub("\n", "<br />")
+	return xml.pcdata(value or ""):gsub("\n", "<br />")
 end
 
 local function render_key_value_table(content, title)
@@ -283,7 +283,7 @@ local function render_key_value_table(content, title)
 	for line in content:gmatch("[^\r\n]+") do
 		local key, value = line:match("^%s*([^:：]+)%s*[:：]%s*(.-)%s*$")
 		if key and value then
-			rows[#rows + 1] = "<tr><td style='white-space:nowrap;font-weight:bold;width:180px;'>" .. util.pcdata(key)
+			rows[#rows + 1] = "<tr><td style='white-space:nowrap;font-weight:bold;width:180px;'>" .. xml.pcdata(key)
 				.. "</td><td>" .. html_escape_keep_br(value) .. "</td></tr>"
 		elseif trim(line) ~= "" then
 			rows[#rows + 1] = "<tr><td colspan='2'>" .. html_escape_keep_br(line) .. "</td></tr>"
@@ -291,12 +291,12 @@ local function render_key_value_table(content, title)
 	end
 
 	if #rows == 0 then
-		return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. util.pcdata(content) .. "</pre>"
+		return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. xml.pcdata(content) .. "</pre>"
 	end
 
 	local caption = ""
 	if title and title ~= "" then
-		caption = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. util.pcdata(title) .. "</div>"
+		caption = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. xml.pcdata(title) .. "</div>"
 	end
 
 	return caption
@@ -334,17 +334,17 @@ local function render_whitespace_table(content, title)
 
 	local header = split_cols(lines[1])
 	if #header < 2 then
-		return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. util.pcdata(content) .. "</pre>"
+		return "<pre style='white-space:pre-wrap;word-break:break-all;'>" .. xml.pcdata(content) .. "</pre>"
 	end
 
 	local parts = {}
 	if title and title ~= "" then
-		parts[#parts + 1] = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. util.pcdata(title) .. "</div>"
+		parts[#parts + 1] = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. xml.pcdata(title) .. "</div>"
 	end
 
 	parts[#parts + 1] = "<table class='table cbi-section-table' style='width:100%;'><thead><tr>"
 	for _, col in ipairs(header) do
-		parts[#parts + 1] = "<th>" .. util.pcdata(col) .. "</th>"
+		parts[#parts + 1] = "<th>" .. xml.pcdata(col) .. "</th>"
 	end
 	parts[#parts + 1] = "</tr></thead><tbody>"
 
@@ -353,7 +353,7 @@ local function render_whitespace_table(content, title)
 		if #row > 0 then
 			parts[#parts + 1] = "<tr>"
 			for idx = 1, #header do
-				parts[#parts + 1] = "<td>" .. util.pcdata(row[idx] or "") .. "</td>"
+				parts[#parts + 1] = "<td>" .. xml.pcdata(row[idx] or "") .. "</td>"
 			end
 			parts[#parts + 1] = "</tr>"
 		end
@@ -472,13 +472,13 @@ local function render_two_column_table(rows, title)
 
 	local parts = {}
 	if title and title ~= "" then
-		parts[#parts + 1] = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. util.pcdata(title) .. "</div>"
+		parts[#parts + 1] = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. xml.pcdata(title) .. "</div>"
 	end
 
 	parts[#parts + 1] = "<table class='table cbi-section-table' style='width:100%;'><tbody>"
 	for _, row in ipairs(rows) do
 		parts[#parts + 1] = "<tr><td style='white-space:nowrap;font-weight:bold;width:180px;'>"
-			.. util.pcdata(row[1] or "")
+			.. xml.pcdata(row[1] or "")
 			.. "</td><td>"
 			.. html_escape_keep_br(humanize_cli_value(row[2] or ""))
 			.. "</td></tr>"
@@ -494,15 +494,15 @@ local function render_html_table(headers, rows, title, note)
 
 	local parts = {}
 	if title and title ~= "" then
-		parts[#parts + 1] = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. util.pcdata(title) .. "</div>"
+		parts[#parts + 1] = "<div class='cbi-value-title' style='margin-bottom:6px;'>" .. xml.pcdata(title) .. "</div>"
 	end
 	if note and note ~= "" then
-		parts[#parts + 1] = "<div class='cbi-value-description' style='margin-bottom:6px;'>" .. util.pcdata(note) .. "</div>"
+		parts[#parts + 1] = "<div class='cbi-value-description' style='margin-bottom:6px;'>" .. xml.pcdata(note) .. "</div>"
 	end
 
 	parts[#parts + 1] = "<table class='table cbi-section-table' style='width:100%;'><thead><tr>"
 	for _, header in ipairs(headers) do
-		parts[#parts + 1] = "<th>" .. util.pcdata(header) .. "</th>"
+		parts[#parts + 1] = "<th>" .. xml.pcdata(header) .. "</th>"
 	end
 	parts[#parts + 1] = "</tr></thead><tbody>"
 
@@ -819,121 +819,149 @@ local function list_net_devices()
 	return devs
 end
 
-local function add_file_upload_handler(note_options)
-	local upload_dir = "/tmp/vnt2-upload/"
-	local install_dir = "/usr/bin/"
-	local fd
-	local uploaded_name
+local UPLOAD_DIR = "/etc/vnt2/upload"
+local UPLOAD_PENDING_FILE = "/etc/vnt2/upload.pending"
+local MAX_UPLOAD_SIZE = 256 * 1024 * 1024
 
-	local function install_uploaded_binary(src_path, raw_name)
-		local name = trim(raw_name)
-		local target_name
+local UPLOAD_NOTE_FILES = {
+	vnt2_cli = "/tmp/vnt2-upload-cli.note",
+	vnt2_web = "/tmp/vnt2-upload-web.note",
+	vnts2 = "/tmp/vnt2-upload-server.note"
+}
 
-		if name == "vnt2_cli" or name == "vnt2_ctrl" or name == "vnt2_web" or name == "vnts2" then
-			target_name = name
-		elseif name == "vnts" then
-			target_name = "vnts2"
-		else
-			return nil, translate("未识别的程序文件名，仅支持 vnt2_cli / vnt2_ctrl / vnt2_web / vnts2 / vnts")
-		end
+-- The LuCI CBI framework installs its own multipart file handler while
+-- loading this model (see cbi.lua load()), which silently replaces any
+-- handler registered here. The framework stages the upload to
+-- /etc/luci-uploads/<cbid> and passes that path to the option write
+-- callback, so staging happens in the write callbacks of upload_file /
+-- upload_web / upload_server below instead of via http.setfilehandler.
+local function set_upload_note(program, message)
+	local note_file = UPLOAD_NOTE_FILES[program]
+	if not note_file then
+		return false
+	end
+	return fs.writefile(note_file, tostring(message) .. "\n")
+end
 
-		local target_path = install_dir .. target_name
-		if sys.call("cp -f " .. util.shellquote(src_path) .. " " .. util.shellquote(target_path) .. " >/dev/null 2>&1") ~= 0 then
-			return nil, translate("复制到 /usr/bin 失败")
-		end
-		if sys.call("chmod 755 " .. util.shellquote(target_path) .. " >/dev/null 2>&1") ~= 0 then
-			return nil, translate("设置执行权限失败")
-		end
-		return target_path, nil
+local function write_upload_marker(path, value)
+	local stat = fs.readfile("/proc/self/stat") or ""
+	local pid = stat:match("^(%d+)") or tostring(os.time())
+	local temp = string.format("%s.%s.%s", path, pid, tostring(os.time()))
+	if not fs.writefile(temp, value) then
+		fs.remove(temp)
+		return false
+	end
+	if not fs.chmod(temp, "0600") then
+		fs.remove(temp)
+		return false
+	end
+	if not os.rename(temp, path) then
+		fs.remove(temp)
+		return false
+	end
+	return true
+end
+
+-- The staged file lost its original name, so the file type is sniffed from
+-- the magic bytes: gzip for release .tar.gz bundles, ELF for bare binaries.
+local function detect_upload_kind(path)
+	local fd = nixio.open(path, "r")
+	if not fd then
+		return nil
+	end
+	local chunk = fd:read(4)
+	fd:close()
+	if not chunk or #chunk < 4 then
+		return nil
+	end
+	if chunk:byte(1) == 0x1f and chunk:byte(2) == 0x8b then
+		return "tar.gz"
+	end
+	if chunk:byte(1) == 0x7f and chunk:sub(2, 4) == "ELF" then
+		return "elf"
+	end
+	return nil
+end
+
+local function stage_uploaded_program(program, staged_path)
+	if not fs.mkdirr(UPLOAD_DIR) then
+		set_upload_note(program, translate("错误：无法创建上传暂存目录"))
+		return false
+	end
+	fs.chmod(UPLOAD_DIR, "0700")
+
+	local stat = fs.stat(staged_path)
+	if not stat or stat.type ~= "reg" then
+		set_upload_note(program, translate("错误：上传文件不存在或不是普通文件"))
+		return false
+	end
+	if stat.size > MAX_UPLOAD_SIZE then
+		set_upload_note(program, translate("错误：上传文件超过 256 MiB 限制"))
+		return false
 	end
 
-	local function find_extracted_binary(root, name)
-		local cmd = "find " .. util.shellquote(root) .. " -type f \\( -name "
-			.. util.shellquote(name)
-			.. " -o -name " .. util.shellquote(name .. ".bin")
-			.. " -o -name " .. util.shellquote(name .. "-*")
-			.. " -o -name " .. util.shellquote(name .. "_*")
-			.. " \\) 2>/dev/null | head -n1"
-		return trim(sys.exec(cmd))
+	local kind = detect_upload_kind(staged_path)
+	if not kind then
+		set_upload_note(program, translate("错误：仅支持可执行文件或对应程序的 .tar.gz 压缩包"))
+		return false
 	end
 
-	fs.mkdirr(upload_dir)
-	fs.mkdir(install_dir)
+	local pid_stat = fs.readfile("/proc/self/stat") or ""
+	local pid = pid_stat:match("^(%d+)") or tostring(os.time())
+	local suffix = 0
+	local dest = string.format("%s/incoming.%s.%s", UPLOAD_DIR, pid, tostring(os.time()))
+	while fs.access(dest) do
+		suffix = suffix + 1
+		dest = string.format("%s.%s", dest, tostring(suffix))
+	end
 
-	http.setfilehandler(function(meta, chunk, eof)
-		if not fd then
-			if not meta then
-				return
-			end
+	if not os.rename(staged_path, dest) then
+		set_upload_note(program, translate("错误：无法移动上传文件到暂存目录"))
+		return false
+	end
+	if not fs.chmod(dest, "0600") then
+		fs.remove(dest)
+		set_upload_note(program, translate("错误：无法保护上传暂存文件"))
+		return false
+	end
 
-			uploaded_name = meta.file or ""
-			if uploaded_name == "" then
-				return
-			end
+	-- The marker name tells an archive from a bare binary.
+	local marker_name = (kind == "tar.gz") and (program .. ".tar.gz") or program
+	local marker = string.format(
+		"time=%s\npath=%s\nname=%s\nsize=%s\n",
+		tostring(os.time()), dest, marker_name, tostring(stat.size)
+	)
+	if not write_upload_marker(UPLOAD_PENDING_FILE, marker) then
+		fs.remove(dest)
+		set_upload_note(program, translate("错误：无法记录上传暂存信息"))
+		return false
+	end
 
-			fd = nixio.open(upload_dir .. uploaded_name, "w")
-			if not fd then
-				for _, opt in ipairs(note_options) do
-					opt.value = translate("错误：上传失败")
-				end
-				return
-			end
+	set_upload_note(program, translate("上传文件已接收并暂存，重启服务后生效。"))
+	return true
+end
+
+local function bind_upload_write(option, program)
+	-- The CBI framework stages the multipart upload and passes the temporary
+	-- file path as the written value, so staging for later install happens
+	-- here instead of through a custom http.setfilehandler.
+	option.write = function(self, section, value)
+		value = trim(value)
+		if value == "" or not fs.access(value) then
+			return nil
 		end
-
-		if chunk and fd then
-			fd:write(chunk)
+		local ok = pcall(stage_uploaded_program, program, value)
+		if not ok then
+			set_upload_note(program, translate("错误：处理上传时发生异常，请查看系统日志"))
 		end
+		return nil
+	end
+end
 
-		if eof and fd then
-			fd:close()
-			fd = nil
-
-			local full = upload_dir .. uploaded_name
-			local msg = translate("上传文件已接收") .. " " .. util.pcdata(full)
-
-			if uploaded_name:sub(-7) == ".tar.gz" then
-				local extract_dir = upload_dir .. "extract/"
-				local installed = {}
-
-				sys.call("rm -rf " .. util.shellquote(extract_dir) .. " >/dev/null 2>&1")
-				fs.mkdirr(extract_dir)
-
-				if sys.call("tar -xzf " .. util.shellquote(full) .. " -C " .. util.shellquote(extract_dir) .. " >/dev/null 2>&1") == 0 then
-					for _, bin in ipairs({ "vnt2_cli", "vnt2_ctrl", "vnt2_web", "vnts2", "vnts" }) do
-						local found = find_extracted_binary(extract_dir, bin)
-						if found ~= "" then
-							local installed_path = install_uploaded_binary(found, bin)
-							if installed_path then
-								installed[#installed + 1] = installed_path
-							end
-						end
-					end
-
-					if #installed > 0 then
-						msg = msg .. "<br />" .. translate("已安装到 /usr/bin 并赋予执行权限：")
-						for _, path in ipairs(installed) do
-							msg = msg .. "<br />- " .. util.pcdata(path)
-						end
-					else
-						msg = msg .. "<br />" .. translate("压缩包中未找到可安装的 vnt2/vnts2 程序文件")
-					end
-				else
-					msg = msg .. "<br />" .. translate("压缩包解压失败")
-				end
-			else
-				local installed_path, err = install_uploaded_binary(full, uploaded_name)
-				if installed_path then
-					msg = msg .. "<br />- " .. util.pcdata(installed_path) .. " " .. translate("已安装到 /usr/bin 并赋予执行权限")
-				else
-					msg = msg .. "<br />- " .. util.pcdata(err or translate("安装失败"))
-				end
-			end
-
-			for _, opt in ipairs(note_options) do
-				opt.value = msg
-			end
-		end
-	end)
+local function bind_upload_note(option, program)
+	option.cfgvalue = function()
+		return fs.readfile(UPLOAD_NOTE_FILES[program]) or ""
+	end
 end
 
 local function validate_nonempty(self, value)
@@ -1626,11 +1654,13 @@ local upload = s:taboption("upload", FileUpload, "upload_file")
 upload.optional = true
 upload.default = ""
 upload.template = "vnt2/other_upload"
-upload.description = translate("支持上传 vnt2_cli / vnt2_ctrl / vnt2_web 二进制文件，或包含这些文件的 .tar.gz 压缩包。上传后会自动安装到 /usr/bin/ 并赋予执行权限，重启服务后生效；当自动下载失败时，系统会自动回退使用这里上传并安装的程序。")
+upload.description = translate("支持上传 vnt2_cli / vnt2_ctrl / vnt2_web 二进制文件，或包含这些文件的 .tar.gz 压缩包。上传后文件会暂存到 /etc/vnt2/upload/ 并记录待处理信息，重启服务后生效；当自动下载失败时，系统会自动回退使用已上传的程序。")
+bind_upload_write(upload, "vnt2_cli")
 
 local upload_note = s:taboption("upload", DummyValue, "_upload_note")
 upload_note.rawhtml = true
 upload_note.template = "vnt2/other_dvalue"
+bind_upload_note(upload_note, "vnt2_cli")
 
 -- ==================== vnt2_web ====================
 local w = m:section(TypedSection, "vnt2_web", translate("vnt2_web 客户端设置"))
@@ -1697,9 +1727,9 @@ web_port.placeholder = "19099"
 web_port.datatype = "port"
 
 local web_wan = w:taboption("general", Flag, "web_wan", translate("允许 WAN 访问"),
-	translate("默认启用；当监听地址为 0.0.0.0 或 :: 时会自动创建 WAN 放行规则"))
+	translate("默认关闭；开启后当监听地址为 0.0.0.0 或 :: 时会自动创建 WAN 放行规则"))
 web_wan.rmempty = false
-web_wan.default = "1"
+web_wan.default = "0"
 
 local open_web = w:taboption("general", DummyValue, "_open_web", translate("打开页面"),
 	translate("打开当前配置对应的 Web 管理页面，默认地址通常为 http://路由器IP:19099/"))
@@ -1707,8 +1737,8 @@ open_web.rawhtml = true
 open_web.cfgvalue = function()
 	return string.format(
 		'<a class="btn cbi-button cbi-button-apply" href="%s" target="_blank" rel="noopener noreferrer">%s</a>',
-		util.pcdata(luci.dispatcher.build_url("admin", "vpn", "vnt2", "open_web")),
-		util.pcdata(translate("打开页面"))
+		xml.pcdata(luci.dispatcher.build_url("admin", "vpn", "vnt2", "open_web")),
+		xml.pcdata(translate("打开页面"))
 	)
 end
 
@@ -1754,11 +1784,13 @@ local web_upload = w:taboption("upload", FileUpload, "upload_web")
 web_upload.optional = true
 web_upload.default = ""
 web_upload.template = "vnt2/other_upload"
-web_upload.description = translate("支持上传 vnt2_web 二进制文件或包含 vnt2_web 的 .tar.gz 压缩包；上传后会自动安装到 /usr/bin/ 并赋予执行权限；当自动下载失败时，系统会自动回退使用这里上传并安装的程序。")
+web_upload.description = translate("支持上传 vnt2_web 二进制文件或包含 vnt2_web 的 .tar.gz 压缩包；上传后文件会暂存到 /etc/vnt2/upload/ 并记录待处理信息，重启服务后生效；当自动下载失败时，系统会自动回退使用已上传的程序。")
+bind_upload_write(web_upload, "vnt2_web")
 
 local web_upload_note = w:taboption("upload", DummyValue, "_upload_note_web")
 web_upload_note.rawhtml = true
 web_upload_note.template = "vnt2/other_dvalue"
+bind_upload_note(web_upload_note, "vnt2_web")
 
 -- ==================== vnts2 ====================
 local v = m:section(TypedSection, "vnts2", translate("vnts2 服务端设置"))
@@ -1875,8 +1907,8 @@ open_server_web.rawhtml = true
 open_server_web.cfgvalue = function()
 	return string.format(
 		'<a class="btn cbi-button cbi-button-apply" href="%s" target="_blank" rel="noopener noreferrer">%s</a>',
-		util.pcdata(luci.dispatcher.build_url("admin", "vpn", "vnt2", "open_server_web")),
-		util.pcdata(translate("打开页面"))
+		xml.pcdata(luci.dispatcher.build_url("admin", "vpn", "vnt2", "open_server_web")),
+		xml.pcdata(translate("打开页面"))
 	)
 end
 
@@ -1958,12 +1990,12 @@ local server_upload = v:taboption("upload", FileUpload, "upload_server")
 server_upload.optional = true
 server_upload.default = ""
 server_upload.template = "vnt2/other_upload"
-server_upload.description = translate("支持上传 vnts2 / vnts 二进制文件，或包含这些文件的 .tar.gz 压缩包；上传后会自动安装到 /usr/bin/ 并赋予执行权限；当自动下载失败时，系统会自动回退使用这里上传并安装的程序。")
+server_upload.description = translate("支持上传 vnts2 / vnts 二进制文件，或包含这些文件的 .tar.gz 压缩包；上传后文件会暂存到 /etc/vnt2/upload/ 并记录待处理信息，重启服务后生效；当自动下载失败时，系统会自动回退使用已上传的程序。")
+bind_upload_write(server_upload, "vnts2")
 
 local server_upload_note = v:taboption("upload", DummyValue, "_upload_note_server")
 server_upload_note.rawhtml = true
 server_upload_note.template = "vnt2/other_dvalue"
-
-add_file_upload_handler({ upload_note, web_upload_note, server_upload_note })
+bind_upload_note(server_upload_note, "vnts2")
 
 return m

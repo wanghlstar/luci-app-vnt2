@@ -124,8 +124,14 @@ function M.sanitize_text(content)
 	content = tostring(content or "")
 	content = content:gsub("\27%[[%d;?]*[%a]", "")
 	content = content:gsub("\27%][^\7]*\7", "")
-	content = content:gsub("%z", "")
-	content = content:gsub("\r", "")
+	-- Drop NUL, CR and the remaining C0 control characters, including a stray
+	-- escape and DEL, while keeping \n and \t for readable log output.
+	content = content:gsub("[%c]", function(char)
+		if char == "\n" or char == "\t" then
+			return char
+		end
+		return ""
+	end)
 	return content
 end
 
