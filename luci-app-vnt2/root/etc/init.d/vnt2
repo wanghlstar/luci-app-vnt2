@@ -2851,11 +2851,14 @@ restart_single_instance() {
 		kill "$pid" 2>/dev/null
 	done
 
-	# 进程已不在运行（从未启动或 procd 已放弃重试）时显式启动，
-	# 否则 procd 的 respawn 会在数秒内自动拉起。
+	# 进程没在运行时不能直接调 start_*_instance：从 EXTRA_COMMANDS 里
+	# 调 procd_open_instance 不会真正启动实例（procd 只在 start/reload
+	# 流程中受理实例注册）。这种情况退回完整 stop+start。
 	if ! pidof "${binname}" >/dev/null 2>&1; then
-		log_download "restart_${binname}: not running, starting"
-		"${start_fn}" "$cfg"
+		log_download "restart_${binname}: not running, full restart"
+		stop
+		start
+		return 0
 	fi
 	return 0
 }

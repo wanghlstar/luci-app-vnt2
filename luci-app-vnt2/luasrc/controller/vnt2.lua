@@ -200,7 +200,9 @@ local function get_web_pid(uci)
 end
 
 local function get_server_pid(uci)
-	return get_procd_instance_pid("vnts2") or get_pid_by_name("vnts2") or get_pid_by_name("vnts") or get_pid_by_path(get_server_bin(uci))
+	-- 注意：不能回退到 pidof vnts，那会匹配到旧版 VNT1 的服务进程 vnts，
+	-- 导致 vnts2 未运行却显示“运行中”。
+	return get_procd_instance_pid("vnts2") or get_pid_by_name("vnts2") or get_pid_by_path(get_server_bin(uci))
 end
 
 local function format_runtime(tag_file)
@@ -744,6 +746,32 @@ local function is_cli_reachable(uci)
 	return out ~= "" and not out:match("error") and not out:match("not found") and not out:match("unrecognized") and not out:match("refused") and not out:match("failed")
 end
 
+-- 通过 /proc/<pid>/comm 确认指定名称的进程是否存在。
+-- pidof 在某些场景不可靠，且端口探测无法区分 vnts2 与旧版 vnts
+-- （两者默认端口相同），必须确认进程名。
+local function process_exists(name)
+	name = trim(tostring(name or ""))
+	if name == "" then
+		return false
+	end
+
+	local nixio_fs = require "nixio.fs"
+	local ok, iter = pcall(nixio_fs.dir, "/proc")
+	if not ok or not iter then
+		return false
+	end
+
+	for entry in iter do
+		if entry:match("^%d+$") then
+			local comm = nixio_fs.readfile("/proc/" .. entry .. "/comm")
+			if comm and trim(comm) == name then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function is_server_reachable(server_cfg)
 	local ports = {
 		parse_bind_port(server_cfg.tcp_bind),
@@ -900,14 +928,17 @@ function act_status()
 	local web_dl = parse_state_file("/tmp/vnt2-download-web.state")
 	local server_dl = parse_state_file("/tmp/vnt2-download-server.state")
 
+	-- 端口探测只是兜底：旧版 VNT1 的 vnt-cli / vnt-web / vnts 与 VNT2
+	-- 默认端口相同，必须同时确认对应进程存在，否则会把旧版进程
+	-- 误判为 VNT2 运行中。
 	if cli_enabled and cli_pid == nil then
-		cli_ctrl_ok = is_cli_reachable(uci)
+		cli_ctrl_ok = is_cli_reachable(uci) and process_exists("vnt2_cli")
 	end
 	if web_enabled and web_pid == nil then
-		web_http_ok = is_web_reachable(uci)
+		web_http_ok = is_web_reachable(uci) and process_exists("vnt2_web")
 	end
 	if server_enabled and server_pid == nil then
-		server_port_ok = is_server_reachable(server_cfg)
+		server_port_ok = is_server_reachable(server_cfg) and process_exists("vnts2")
 	end
 
 	e.cli_running = cli_enabled and ((cli_pid ~= nil) or cli_ctrl_ok)
