@@ -2380,7 +2380,7 @@ start_cli_instance() {
 	procd_set_param file "${CLI_CONF_FILE}"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1048576 1048576"
-	procd_set_param term_timeout 10
+	procd_set_param term_timeout 5
 	procd_close_instance
 	date +%s >"${CLI_TIME}"
 	log_cli 'start command submitted'
@@ -2507,7 +2507,7 @@ start_web_instance() {
 	procd_set_param file "${WEB_CONF_FILE}"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1048576 1048576"
-	procd_set_param term_timeout 10
+	procd_set_param term_timeout 5
 	procd_close_instance
 	date +%s >"${WEB_TIME}"
 	log_web 'start command submitted'
@@ -2581,7 +2581,7 @@ start_server_instance() {
 	procd_set_param file "${SERVER_CONF_FILE}"
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1048576 1048576"
-	procd_set_param term_timeout 10
+	procd_set_param term_timeout 5
 	procd_close_instance
 	date +%s >"${SERVER_TIME}"
 	log_server 'start command submitted'
@@ -2743,17 +2743,21 @@ reload_service() {
 			pid="$(pidof vnts2 2>/dev/null | awk '{print $1}')"
 			if [ "$enabled" != "1" ]; then
 				if [ -n "$pid" ]; then
-					log_server "disabled, stopping vnts2"
-					kill "$pid" 2>/dev/null
+					# 运行中被禁用：杀进程会被 procd 拉回来，必须完整重启
+					# 才能注销实例
+					log_server "disabled while running, full restart required"
+					need_full=1
+				else
+					cleanup_server_firewall
 				fi
-				cleanup_server_firewall
 			elif [ -n "$pid" ]; then
 				# 运行中：重放防火墙后杀进程，procd 会用新 TOML 重新拉起
 				log_server "configuration changed, restarting vnts2"
 				replay_server_firewall "$cfg"
 				kill "$pid" 2>/dev/null
 			else
-				# 之前未运行：完整启动该实例
+				# 之前未运行：只启动该实例，不影响客户端
+				log_server "enabled, starting vnts2"
 				start_server_instance "$cfg"
 			fi
 		fi
@@ -2762,7 +2766,7 @@ reload_service() {
 
 	# ---- 客户端单元（vnt2_cli 与 vnt2_web 互斥，视为一个单元）----
 	if [ "$client_changed" = "1" ]; then
-		local cli_cfg web_cfg cli_enabled=0 web_enabled=0 want running
+		local cli_cfg web_cfg cli_enabled=0 web_enabled=0 want cli_run=0 web_run=0
 		cli_cfg="$(get_first_section_id "vnt2_cli")"
 		web_cfg="$(get_first_section_id "vnt2_web")"
 		[ -n "$cli_cfg" ] && config_get_bool cli_enabled "$cli_cfg" "enabled" "0"
@@ -2777,16 +2781,37 @@ reload_service() {
 			want=""
 		fi
 
-		if [ -n "$want" ] && pidof "$want" >/dev/null 2>&1; then
-			# 目标实例正在运行：重放网络配置后杀进程，procd 用新 TOML 拉起
-			log_cli "configuration changed, restarting ${want}"
+		pidof vnt2_cli >/dev/null 2>&1 && cli_run=1
+		pidof vnt2_web >/dev/null 2>&1 && web_run=1
+
+		# 增量重启只在“目标实例正在运行且没有多余实例”时安全：
+		# 杀进程不会注销 procd 实例，任何需要改变“哪些实例在跑”的
+		# 场景（禁用、模式切换、残留实例）都必须走完整 stop+start。
+		if [ "$want" = "vnt2_cli" ] && [ "$cli_run" = "1" ] && [ "$web_run" = "0" ]; then
+			# 配置变化且实例已在运行：杀进程让 procd 用新 TOML 拉起
+			log_cli "configuration changed, restarting vnt2_cli"
 			replay_client_network "$cli_cfg"
-			for pid in $(pidof vnt2_cli 2>/dev/null) $(pidof vnt2_web 2>/dev/null); do
+			for pid in $(pidof vnt2_cli 2>/dev/null); do
 				kill "$pid" 2>/dev/null
 			done
+		elif [ "$want" = "vnt2_web" ] && [ "$web_run" = "1" ] && [ "$cli_run" = "0" ]; then
+			log_web "configuration changed, restarting vnt2_web"
+			replay_client_network "$cli_cfg"
+			for pid in $(pidof vnt2_web 2>/dev/null); do
+				kill "$pid" 2>/dev/null
+			done
+		elif [ "$want" = "vnt2_cli" ] && [ "$cli_run" = "0" ] && [ "$web_run" = "0" ]; then
+			# 首次启用 cli：只启动该实例，不动服务端和其他单元
+			log_cli "enabled, starting vnt2_cli"
+			start_cli_instance "$cli_cfg"
+		elif [ "$want" = "vnt2_web" ] && [ "$web_run" = "0" ] && [ "$cli_run" = "0" ]; then
+			log_web "enabled, starting vnt2_web"
+			start_web_instance "$web_cfg"
 		else
-			# 目标未运行（首次启用或模式切换）：需要完整重启
-			need_full=1
+			# 全部禁用 / 模式切换 / 有残留实例：必须完整重启
+			if [ -n "$want" ] || [ "$cli_run" = "1" ] || [ "$web_run" = "1" ]; then
+				need_full=1
+			fi
 		fi
 		save_client_fingerprint
 	fi
