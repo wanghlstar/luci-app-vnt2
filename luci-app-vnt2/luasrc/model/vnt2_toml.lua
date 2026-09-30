@@ -869,6 +869,19 @@ function M.export_uci_to_toml(uci)
 		end
 	end
 
+	-- vnt2_web 的 Web UI 用 config_name 作为配置显示名。此前只在外部已写入时才
+	-- 保留，全新安装下它是空的，Web UI 列表里就显示成空名。用 TOML 文件名
+	-- （去掉 .toml）兜底，默认即 vnt2_cli_web。
+	do
+		local base = client_toml:match("([^/]+)%.toml$") or client_toml:match("([^/]+)$")
+		if trim(cli.config_name or "") == "" then
+			cli.config_name = base or "vnt2_cli_web"
+		end
+		if trim(web.config_name or "") == "" then
+			web.config_name = cli.config_name
+		end
+	end
+
 	-- "no_tun" was removed upstream: both vnt2_cli and the vnt2_web UI
 	-- reject it ("use device_mode = no|tun|tap"). Map the legacy UCI flag.
 	cli.device_mode = (cli.no_tun == "1" or cli.no_tun == true) and "no" or "tun"

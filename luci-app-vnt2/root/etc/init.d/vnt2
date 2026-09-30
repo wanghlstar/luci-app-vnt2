@@ -1933,6 +1933,40 @@ toml_validate_server_config() {
 	return 0
 }
 
+# 批量模式：置 1 时 commit_net_fw 只保留未提交的改动，不触发 reload；
+# 由调用方改完所有规则后统一调 apply_net_fw 落盘。
+# 早先每个 cleanup_*/configure_* 都各自 reload，一次停止要串行跑 1 次
+# network reload + 3 次 firewall reload（每次数秒），实测把停止/启动拖长十几秒。
+VNT2_NET_BATCH=0
+
+commit_net_fw() {
+	[ "$VNT2_NET_BATCH" = "1" ] && return 0
+
+	if [ -n "$(uci changes network)" ]; then
+		uci commit network
+		/etc/init.d/network reload >/dev/null 2>&1
+	fi
+	if [ -n "$(uci changes firewall)" ]; then
+		uci commit firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+}
+
+# 批量收尾：network / firewall 各只 commit + reload 一次
+apply_net_fw() {
+	[ "$VNT2_NET_BATCH" = "1" ] || return 0
+	VNT2_NET_BATCH=0
+
+	if [ -n "$(uci changes network)" ]; then
+		uci commit network
+		/etc/init.d/network reload >/dev/null 2>&1
+	fi
+	if [ -n "$(uci changes firewall)" ]; then
+		uci commit firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+}
+
 # configure_network 早先无条件 delete + 重建，uci changes 于是永远非空，每次启动
 # 都触发一遍 network/firewall reload（实测 10 秒以上），把整个重启流程拖慢。
 # 先比对目标状态与现状，完全一致就直接返回。
@@ -2076,14 +2110,7 @@ configure_network() {
 		;;
 	esac
 
-	if [ -n "$(uci changes network)" ]; then
-		uci commit network
-		/etc/init.d/network reload >/dev/null 2>&1
-	fi
-	if [ -n "$(uci changes firewall)" ]; then
-		uci commit firewall
-		/etc/init.d/firewall reload >/dev/null 2>&1
-	fi
+	commit_net_fw
 	# Zone forwarding rules above only take effect with IP forwarding enabled,
 	# regardless of whether NAT/masq is active for the VNT2 zone.
 	sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
@@ -2097,8 +2124,7 @@ cleanup_network() {
 	uci -q delete firewall.vnt2fwwan
 	uci -q delete firewall.lanfwvnt2
 	uci -q delete firewall.wanfwvnt2
-	[ -n "$(uci changes network)" ] && uci commit network && /etc/init.d/network reload >/dev/null 2>&1
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 ensure_firewall_rule() {
@@ -2129,12 +2155,12 @@ configure_web_firewall() {
 	if [ "$wan" = "1" ] && valid_port "$port" && [ -n "$wan_zone" ] && host_allows_external_access "$host"; then
 		ensure_firewall_rule "vnt2web" "vnt2_web" "tcp" "$port" "$wan_zone"
 	fi
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 cleanup_web_firewall() {
 	uci -q delete firewall.vnt2web
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 configure_server_firewall() {
@@ -2165,7 +2191,7 @@ configure_server_firewall() {
 	valid_port "$ws_port" && [ "$open_ws" = "1" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$ws_bind" && ensure_firewall_rule "vnts2_ws" "vnts2_ws" "tcp" "$ws_port" "$wan_zone"
 	valid_port "$web_port" && [ "$open_web" = "1" ] && [ -n "$wan_zone" ] && bind_allows_external_access "$web_bind" && ensure_firewall_rule "vnts2_web" "vnts2_web" "tcp" "$web_port" "$wan_zone"
 
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 configure_cli_tunnel_firewall() {
@@ -2183,13 +2209,13 @@ configure_cli_tunnel_firewall() {
 		log_cli "opened WAN inbound for tunnel port ${port}"
 	fi
 
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 cleanup_cli_tunnel_firewall() {
 	uci -q delete firewall.vnt2tunnel_tcp
 	uci -q delete firewall.vnt2tunnel_udp
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 configure_server_cluster_firewall() {
@@ -2206,7 +2232,7 @@ configure_server_cluster_firewall() {
 		log_server "opened WAN inbound for cluster port ${port}"
 	fi
 
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 cleanup_server_firewall() {
@@ -2214,7 +2240,7 @@ cleanup_server_firewall() {
 	uci -q delete firewall.vnts2_quic
 	uci -q delete firewall.vnts2_ws
 	uci -q delete firewall.vnts2_web
-	[ -n "$(uci changes firewall)" ] && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+	commit_net_fw
 }
 
 prepare_cli_runtime() {
@@ -2747,9 +2773,11 @@ start_service() {
 	web_cfg="$(get_first_section_id "vnt2_web")"
 	server_cfg="$(get_first_section_id "vnts2")"
 
+	VNT2_NET_BATCH=1
     [ -n "$cli_cfg" ] && start_cli_instance "$cli_cfg" || log_cli 'vnt2_cli config section not found'
     [ -n "$web_cfg" ] && start_web_instance "$web_cfg" || log_web 'vnt2_web config section not found'
     [ -n "$server_cfg" ] && start_server_instance "$server_cfg" || log_server 'vnts2 config section not found'
+	apply_net_fw
 
 	# 记录配置指纹基线，供 reload 判断哪些单元需要重启
 	save_client_fingerprint
@@ -2765,11 +2793,13 @@ stop_service() {
 	log_server 'service stop flow begin'
 	log_download 'service stop flow begin'
 
+	VNT2_NET_BATCH=1
 	rm -f "${CLI_TIME}" "${WEB_TIME}" "${SERVER_TIME}"
 	cleanup_network
 	cleanup_web_firewall
 	cleanup_server_firewall
 	cleanup_cli_tunnel_firewall
+	apply_net_fw
 
 	log_cli 'service stopped'
 	log_web 'service stopped'
@@ -2867,6 +2897,9 @@ reload_service() {
 	# start_web_instance，所以链接在这里统一重建。
 	ensure_web_config_exposure "$(resolve_web_conf_file "$(get_first_section_id "vnt2_web")")"
 
+	# 本轮所有 UCI 改动最后统一生效，避免 network/firewall 反复 reload
+	VNT2_NET_BATCH=1
+
 	# ---- 服务端单元：配置没变就完全不动，避免影响已连接的设备 ----
 	if [ "$server_changed" = "1" ]; then
 		cfg="$(get_first_section_id "vnts2")"
@@ -2949,6 +2982,8 @@ reload_service() {
 		fi
 		save_client_fingerprint
 	fi
+
+	apply_net_fw
 
 	# 首次启用、模式切换等无法增量处理的场景，退回全量重启
 	if [ "$need_full" = "1" ]; then
