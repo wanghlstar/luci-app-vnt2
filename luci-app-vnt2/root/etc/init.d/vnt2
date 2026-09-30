@@ -2916,14 +2916,19 @@ save_client_state() {
 }
 
 reconcile_client_exclusion() {
-	local cli_cfg web_cfg cli_now web_now cli_old web_old
+	local cli_cfg web_cfg cli_now web_now cli_prev web_prev
 
 	cli_cfg="$(get_first_section_id "vnt2_cli")"
 	web_cfg="$(get_first_section_id "vnt2_web")"
 	[ -n "$cli_cfg" ] && [ -n "$web_cfg" ] || return 0
 
+	cli_prev="$(sed -n 's/^cli=//p' "${VNT2_CLIENT_STATE}" 2>/dev/null)"
+	web_prev="$(sed -n 's/^web=//p' "${VNT2_CLIENT_STATE}" 2>/dev/null)"
 	cli_now="$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)"
 	web_now="$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)"
+
+	# 无条件记录，方便判断“为何没有裁决”
+	log_download "reconcile: cli=${cli_now:-?} web=${web_now:-?} 旧 cli=${cli_prev:-?} web=${web_prev:-?}"
 
 	if [ "$cli_now" != "1" ] || [ "$web_now" != "1" ]; then
 		# 只有一个启用，无需裁决，只更新状态
@@ -2931,10 +2936,7 @@ reconcile_client_exclusion() {
 		return 0
 	fi
 
-	cli_old="$(sed -n 's/^cli=//p' "${VNT2_CLIENT_STATE}" 2>/dev/null)"
-	web_old="$(sed -n 's/^web=//p' "${VNT2_CLIENT_STATE}" 2>/dev/null)"
-
-	if [ "$cli_old" = "0" ] && [ "$web_old" = "1" ]; then
+	if [ "$cli_prev" = "0" ] && [ "$web_prev" = "1" ]; then
 		# cli 是刚勾选的，web 原本就勾着 → cli 生效
 		uci -q set ${CONF}.${web_cfg}.enabled="0"
 		log_download "reconcile: cli 是刚勾选的，停用 vnt2_web"
