@@ -2965,6 +2965,11 @@ reload_service() {
 	log_download "reload_service entered"
 	reconcile_client_exclusion
 
+	# reconcile 是用 uci 命令行改的配置文件，config_* 那套缓存还是改之前的旧值。
+	# 必须重新加载，否则后面读到的 enabled 与实际配置不符——曾出现配置已改成
+	# cli=1/web=0，但缓存里还是 cli=0/web=1，set_changed 判 0、进程不切换。
+	config_load "${CONF}"
+
 	export_toml_from_uci >/dev/null 2>&1
 	ensure_web_config_exposure "$(resolve_web_conf_file "$(get_first_section_id "vnt2_web")")"
 
