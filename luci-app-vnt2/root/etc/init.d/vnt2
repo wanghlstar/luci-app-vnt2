@@ -2956,13 +2956,16 @@ reload_service() {
 	local cli_fp_now srv_fp_now cli_fp_old srv_fp_old
 	local set_changed=0 pid
 
-	# 先把互斥配置收口，再据此决定起停
+	# ---- 重新导出 TOML：随后被重启的进程会读到新内容 ----
+	# 必须先 config_load：reconcile_client_exclusion 里的 get_first_section_id
+	# 走 config_foreach，没加载配置时取不到 section，会直接返回、裁决完全不执行。
+	config_load "${CONF}"
+
+	# 再把互斥配置收口，据此决定起停
 	log_download "reload_service entered"
 	reconcile_client_exclusion
 
-	# ---- 重新导出 TOML：随后被重启的进程会读到新内容 ----
 	export_toml_from_uci >/dev/null 2>&1
-	config_load "${CONF}"
 	ensure_web_config_exposure "$(resolve_web_conf_file "$(get_first_section_id "vnt2_web")")"
 
 	cli_cfg="$(get_first_section_id "vnt2_cli")"
