@@ -2786,6 +2786,32 @@ start_service() {
 	log_download "start_service finished"
 }
 
+# rc.common 的 stop() 是 procd_lock + stop_service + procd_kill，其中
+# stop_service 里的 network/firewall reload 要数秒到十几秒，整段时间都占着
+# procd 锁——期间其它“保存并应用 / 重启”请求全部阻塞在 flock 上（无超时），
+# 表现为 UI 假死、rc.common 进程堆积。这里自己完成停止动作，不经过
+# rc.common 的 stop()。
+# 另外 procd_kill 只是 ubus 调用，实例是异步终止的；不等待就可能出现旧进程
+# 还活着、新实例又注册上来的竞态（表现为“取消勾选后进程还在”）。
+vnt2_terminate() {
+	local i pid
+
+	stop_service
+	procd_kill "vnt2"
+
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+		pid="$(pidof vnt2_cli vnt2_web vnts2 2>/dev/null)"
+		[ -z "$pid" ] && return 0
+		sleep 1
+	done
+
+	# 超时仍未退出：SIGTERM 已由 procd 发过，这里 SIGKILL 兜底
+	for pid in $(pidof vnt2_cli vnt2_web vnts2 2>/dev/null); do
+		kill -9 "$pid" 2>/dev/null
+	done
+	sleep 1
+}
+
 stop_service() {
 	ensure_log_files
 	log_cli 'service stop flow begin'
@@ -2988,7 +3014,7 @@ reload_service() {
 	# 首次启用、模式切换等无法增量处理的场景，退回全量重启
 	if [ "$need_full" = "1" ]; then
 		log_download "reload: falling back to full restart"
-		stop
+		vnt2_terminate
 		start
 	fi
 }
@@ -3026,7 +3052,7 @@ restart_single_instance() {
 	# 流程中受理实例注册）。这种情况退回完整 stop+start。
 	if ! pidof "${binname}" >/dev/null 2>&1; then
 		log_download "restart_${binname}: not running, full restart"
-		stop
+		vnt2_terminate
 		start
 		return 0
 	fi
