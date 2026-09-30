@@ -2927,9 +2927,6 @@ reconcile_client_exclusion() {
 	cli_now="$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)"
 	web_now="$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)"
 
-	# 无条件记录，方便判断“为何没有裁决”
-	log_download "reconcile: cli=${cli_now:-?} web=${web_now:-?} 旧 cli=${cli_prev:-?} web=${web_prev:-?}"
-
 	if [ "$cli_now" != "1" ] || [ "$web_now" != "1" ]; then
 		# 只有一个启用，无需裁决，只更新状态
 		save_client_state
@@ -2962,7 +2959,6 @@ reload_service() {
 	config_load "${CONF}"
 
 	# 再把互斥配置收口，据此决定起停
-	log_download "reload_service entered"
 	reconcile_client_exclusion
 
 	# reconcile 是用 uci 命令行改的配置文件，config_* 那套缓存还是改之前的旧值。

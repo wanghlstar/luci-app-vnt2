@@ -116,63 +116,6 @@ local function set_sections_option_by_type(config, stype, option, value)
 end
 
 
-local function render_mutual_exclusion_script()
-	return [[
-<script type="text/javascript">
-(function() {
-	function textOf(node) {
-		return (node && (node.textContent || node.innerText) || "").replace(/\s+/g, " ").trim();
-	}
-
-	function findCheckboxByLabel(labelText) {
-		var labels = document.querySelectorAll("label");
-		for (var i = 0; i < labels.length; i++) {
-			if (textOf(labels[i]) === labelText) {
-				var forId = labels[i].getAttribute("for");
-				if (forId) {
-					var input = document.getElementById(forId);
-					if (input && input.type === "checkbox") {
-						return input;
-					}
-				}
-				var nested = labels[i].querySelector('input[type="checkbox"]');
-				if (nested) {
-					return nested;
-				}
-			}
-		}
-		return null;
-	}
-
-	function bindExclusive(a, b) {
-		if (!a || !b || a._vnt2ExclusiveBound) {
-			return;
-		}
-		a._vnt2ExclusiveBound = true;
-		a.addEventListener("change", function() {
-			if (a.checked) {
-				b.checked = false;
-			}
-		});
-	}
-
-	function initExclusive() {
-		var cli = findCheckboxByLabel("启用cli 客户端");
-		var web = findCheckboxByLabel("启用web 客户端");
-		bindExclusive(cli, web);
-		bindExclusive(web, cli);
-	}
-
-	if (document.readyState === "loading") {
-		document.addEventListener("DOMContentLoaded", initExclusive);
-	} else {
-		initExclusive();
-	}
-})();
-</script>
-]]
-end
-
 local function render_pre_content(content)
 	content = trim(content)
 	if content == "" then
@@ -1542,7 +1485,7 @@ mutual_exclusion_tip.rawhtml = true
 mutual_exclusion_tip.cfgvalue = function()
 	return [[
 <div class="cbi-value-description">CLI 客户端与 Web 客户端互斥（共用同一配置和设备标识，同时运行会被服务端拒绝注册）。勾选其中一个，另一个会自动取消；若同时勾选两个，则保留 Web 客户端。</div>
-]] .. render_mutual_exclusion_script()
+]]
 end
 
 local enabled = s:taboption("general", Flag, "enabled", translate("启用cli 客户端"))
@@ -1781,7 +1724,6 @@ local tunnel_port = s:taboption("advanced", Value, "tunnel_port", translate("隧
 tunnel_port.placeholder = "0"
 tunnel_port.validate = validate_port_or_zero
 
-
 do
 local tunnel_addr = s:taboption("advanced", DynamicList, "tunnel_addr", translate("隧道监听地址"),
 	translate("P2P 隧道监听地址；IPv4 与 IPv6 最多各一个且必须使用相同端口，端口 0 表示自动分配。与上方“隧道端口”互斥，不要同时填写"))
@@ -1795,7 +1737,6 @@ bind_dev:value("", translate("不绑定"))
 for _, dev in ipairs(list_net_devices()) do
 	bind_dev:value(dev.iface, dev.iface .. " (" .. dev.ip .. ")")
 end
-
 
 do
 local auto_sync_subnet = s:taboption("advanced", Flag, "auto_sync_subnet", translate("自动同步出口子网"),
