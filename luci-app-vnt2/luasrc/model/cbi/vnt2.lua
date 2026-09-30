@@ -28,6 +28,29 @@ local function export_toml_from_uci(self)
 	toml.export_uci_to_toml(self.uci)
 end
 
+-- cli 与 web 互斥的最终裁决：cli 优先。
+-- 两个 Flag 各自的 write 钩子都会去清对方，同页两个都勾选时两个钩子都触发，
+-- 后处理的字段覆盖先处理的——section 创建顺序是 cli→web→server，于是 web
+-- 总是赢，和提示文字、init.d 里的运行时逻辑（cli 优先）都不一致。
+-- 这里在 on_after_save（uci:save 之后、commit 之前）统一收口，保证无论勾选
+-- 顺序如何结果都确定。
+-- 必须定义在 m.on_after_save 之前：Lua 的 local function 在后面定义时，
+-- 前面的闭包捕获到的是 nil，调用会直接报错、裁决根本不执行。
+local reconcile_client_exclusion
+
+function reconcile_client_exclusion()
+	local cli_sec = m.uci:get_first("vnt2", "vnt2_cli")
+	local web_sec = m.uci:get_first("vnt2", "vnt2_web")
+
+	if not cli_sec or not web_sec then
+		return
+	end
+
+	if m.uci:get("vnt2", cli_sec, "enabled") == "1" then
+		m.uci:set("vnt2", web_sec, "enabled", "0")
+	end
+end
+
 m.on_after_save = function(self)
 	reconcile_client_exclusion()
 	export_toml_from_uci(self)
@@ -117,24 +140,6 @@ local function set_sections_option_by_type(config, stype, option, value)
 	end)
 end
 
--- cli 与 web 互斥的最终裁决：cli 优先。
--- 两个 Flag 各自的 write 钩子都会去清对方，同页两个都勾选时两个钩子都触发，
--- 后处理的字段覆盖先处理的——section 创建顺序是 cli→web→server，于是 web
--- 总是赢，和提示文字、init.d 里的运行时逻辑（cli 优先）都不一致。
--- 这里在 on_after_save（uci:save 之后、commit 之前）统一收口，保证无论勾选
--- 顺序如何结果都确定。
-local function reconcile_client_exclusion()
-	local cli_sec = m.uci:get_first("vnt2", "vnt2_cli")
-	local web_sec = m.uci:get_first("vnt2", "vnt2_web")
-
-	if not cli_sec or not web_sec then
-		return
-	end
-
-	if m.uci:get("vnt2", cli_sec, "enabled") == "1" then
-		m.uci:set("vnt2", web_sec, "enabled", "0")
-	end
-end
 
 local function render_mutual_exclusion_script()
 	return [[
