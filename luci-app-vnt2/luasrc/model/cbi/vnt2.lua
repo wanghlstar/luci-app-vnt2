@@ -1,5 +1,13 @@
 local fs = require "nixio.fs"
 local nixio = require "nixio"
+
+-- 临时诊断：记录互斥相关钩子的实际执行情况，定位“配置里两个 enabled 都是 1”
+local function cbi_log(fmt, ...)
+	local ok, msg = pcall(string.format, fmt, ...)
+	if not ok then msg = tostring(fmt) end
+	pcall(fs.writefile, "/tmp/vnt2-cbi.log",
+		os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(msg) .. "\n", "a")
+end
 local util = require "luci.util"
 local xml = require "luci.xml"
 local sys = require "luci.sys"
@@ -39,6 +47,8 @@ m.on_parse = function(self)
 	local ws = u:get_first("vnt2", "vnt2_web")
 	cli_web_was.cli = (cs and u:get("vnt2", cs, "enabled")) or "0"
 	cli_web_was.web = (ws and u:get("vnt2", ws, "enabled")) or "0"
+	cbi_log("on_parse: cli_sec=%s web_sec=%s snap cli=%s web=%s",
+		tostring(cs), tostring(ws), tostring(cli_web_was.cli), tostring(cli_web_was.web))
 end
 
 -- 互斥最终收口：刚勾选的那个生效；两个都是刚勾选则 web 优先。
@@ -54,6 +64,9 @@ local function reconcile_client_exclusion()
 		return
 	end
 
+	cbi_log("on_before_save: cli_now=%s web_now=%s snap cli=%s web=%s",
+		tostring(u:get("vnt2", cs, "enabled")), tostring(u:get("vnt2", ws, "enabled")),
+		tostring(cli_web_was.cli), tostring(cli_web_was.web))
 	if u:get("vnt2", cs, "enabled") ~= "1" or u:get("vnt2", ws, "enabled") ~= "1" then
 		return		-- 只有一个启用，无需处理
 	end
@@ -1588,6 +1601,8 @@ local enabled = s:taboption("general", Flag, "enabled", translate("启用cli 客
 enabled.rmempty = false
 enabled.default = "0"
 enabled.write = function(self, section, value)
+	cbi_log("cli.write: value=%s snap cli=%s web=%s",
+		tostring(value), tostring(cli_web_was.cli), tostring(cli_web_was.web))
 	self.map.uci:set(self.map.config, section, self.option, value)
 	-- 只有“刚勾选”（0→1）才清掉对方。原本就勾选的不能清：同页两个都勾选时
 	-- 两个钩子都会触发，若不区分就会互相覆盖，变成后处理的字段赢。
@@ -2088,6 +2103,8 @@ local web_enabled = w:taboption("general", Flag, "enabled", translate("启用web
 web_enabled.rmempty = false
 web_enabled.default = "0"
 web_enabled.write = function(self, section, value)
+	cbi_log("web.write: value=%s snap cli=%s web=%s",
+		tostring(value), tostring(cli_web_was.cli), tostring(cli_web_was.web))
 	self.map.uci:set(self.map.config, section, self.option, value)
 	if value == "1" and cli_web_was.web ~= "1" then
 		set_sections_option_by_type(self.map.config, "vnt2_cli", "enabled", "0")

@@ -2922,6 +2922,7 @@ reload_service() {
 	local set_changed=0 pid
 
 	# 先把互斥配置收口，再据此决定起停
+	log_download "reload_service entered"
 	reconcile_client_exclusion
 
 	# ---- 重新导出 TOML：随后被重启的进程会读到新内容 ----
