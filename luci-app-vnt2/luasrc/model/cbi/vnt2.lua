@@ -1,13 +1,6 @@
 local fs = require "nixio.fs"
 local nixio = require "nixio"
 
--- 临时诊断：记录互斥相关钩子的实际执行情况，定位“配置里两个 enabled 都是 1”
-local function cbi_log(fmt, ...)
-	local ok, msg = pcall(string.format, fmt, ...)
-	if not ok then msg = tostring(fmt) end
-	pcall(fs.writefile, "/tmp/vnt2-cbi.log",
-		os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(msg) .. "\n", "a")
-end
 local util = require "luci.util"
 local xml = require "luci.xml"
 local sys = require "luci.sys"
@@ -36,51 +29,6 @@ local function export_toml_from_uci(self)
 	toml.export_uci_to_toml(self.uci)
 end
 
--- cli 与 web 互斥：保存前先快照两者的 enabled，供各自的 write 钩子判断
--- “是否刚被勾选”（0→1）。必须在任何写入之前取，否则先跑的钩子会污染后跑的
--- 读到的旧值。on_parse 在 Node.parse（真正写表单值）之前执行，正合适。
-local cli_web_was = {}
-
-m.on_parse = function(self)
-	local u = self.uci
-	local cs = u:get_first("vnt2", "vnt2_cli")
-	local ws = u:get_first("vnt2", "vnt2_web")
-	cli_web_was.cli = (cs and u:get("vnt2", cs, "enabled")) or "0"
-	cli_web_was.web = (ws and u:get("vnt2", ws, "enabled")) or "0"
-	cbi_log("on_parse: cli_sec=%s web_sec=%s snap cli=%s web=%s",
-		tostring(cs), tostring(ws), tostring(cli_web_was.cli), tostring(cli_web_was.web))
-end
-
--- 互斥最终收口：刚勾选的那个生效；两个都是刚勾选则 web 优先。
--- 两个 Flag 的 write 钩子已各自清过对方，但浏览器端的互斥脚本若没生效，
--- 后写的字段会拿表单值把先写的清理结果覆盖回去（表现为两个 enabled 都是 1）。
--- on_before_save 在两次 write 之后、uci:save() 之前，按快照重新裁决，
--- 裁决结果随 savefile 一起落到 apply 请求里。
-local function reconcile_client_exclusion()
-	local u = m.uci
-	local cs = u:get_first("vnt2", "vnt2_cli")
-	local ws = u:get_first("vnt2", "vnt2_web")
-	if not cs or not ws then
-		return
-	end
-
-	cbi_log("on_before_save: cli_now=%s web_now=%s snap cli=%s web=%s",
-		tostring(u:get("vnt2", cs, "enabled")), tostring(u:get("vnt2", ws, "enabled")),
-		tostring(cli_web_was.cli), tostring(cli_web_was.web))
-	if u:get("vnt2", cs, "enabled") ~= "1" or u:get("vnt2", ws, "enabled") ~= "1" then
-		return		-- 只有一个启用，无需处理
-	end
-
-	if cli_web_was.cli ~= "1" and cli_web_was.web == "1" then
-		-- cli 是刚勾选的，web 原本就勾着 → cli 生效
-		u:set("vnt2", ws, "enabled", "0")
-	else
-		-- web 刚勾选 / 两个都刚勾选 / 原本就两个都勾 → web 生效
-		u:set("vnt2", cs, "enabled", "0")
-	end
-end
-
-m.on_before_save = reconcile_client_exclusion
 m.on_after_save = export_toml_from_uci
 m.on_after_commit = export_toml_from_uci
 
@@ -1601,14 +1549,7 @@ local enabled = s:taboption("general", Flag, "enabled", translate("启用cli 客
 enabled.rmempty = false
 enabled.default = "0"
 enabled.write = function(self, section, value)
-	cbi_log("cli.write: value=%s snap cli=%s web=%s",
-		tostring(value), tostring(cli_web_was.cli), tostring(cli_web_was.web))
 	self.map.uci:set(self.map.config, section, self.option, value)
-	-- 只有“刚勾选”（0→1）才清掉对方。原本就勾选的不能清：同页两个都勾选时
-	-- 两个钩子都会触发，若不区分就会互相覆盖，变成后处理的字段赢。
-	if value == "1" and cli_web_was.cli ~= "1" then
-		set_sections_option_by_type(self.map.config, "vnt2_web", "enabled", "0")
-	end
 end
 
 local restart_btn = s:taboption("general", Button, "_restart_cli", translate("重启客户端"))
@@ -2103,12 +2044,7 @@ local web_enabled = w:taboption("general", Flag, "enabled", translate("启用web
 web_enabled.rmempty = false
 web_enabled.default = "0"
 web_enabled.write = function(self, section, value)
-	cbi_log("web.write: value=%s snap cli=%s web=%s",
-		tostring(value), tostring(cli_web_was.cli), tostring(cli_web_was.web))
 	self.map.uci:set(self.map.config, section, self.option, value)
-	if value == "1" and cli_web_was.web ~= "1" then
-		set_sections_option_by_type(self.map.config, "vnt2_cli", "enabled", "0")
-	end
 end
 
 local web_restart = w:taboption("general", Button, "_restart_web", translate("重启客户端"))

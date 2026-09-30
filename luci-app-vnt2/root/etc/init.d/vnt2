@@ -2896,22 +2896,55 @@ replay_client_network() {
 	configure_cli_tunnel_firewall "${VNT2_TUNNEL_PORT}"
 }
 
-# cli 与 web 互斥的兜底收口：web 优先。
-# CBI 侧两个 Flag 的 write 钩子已经按“刚勾选才清对方”处理过，正常不会两个
-# 同时为 1；这道兜底主要覆盖手工改配置的情况，保证配置与运行时一致。
-reconcile_client_exclusion() {
+# cli 与 web 互斥的裁决：刚勾选的那个生效；两个都是刚勾选则 web 优先。
+#
+# 为什么放在 init.d 而不是 CBI：实测 CBI 侧不可控——cli section 的 enabled
+# 字段有时根本不经过 write 钩子（诊断日志里只有 web.write，没有 cli.write），
+# 而 reload_service 是确定会跑的（保存并应用必然触发）。所以这里用 /tmp 下的
+# 状态文件记录上一轮的 enabled，据此判断哪个是刚勾选的，不依赖任何钩子顺序。
+VNT2_CLIENT_STATE="${VNT2_FP_DIR}/client_state"
+
+save_client_state() {
 	local cli_cfg web_cfg
+	mkdir -p "${VNT2_FP_DIR}" 2>/dev/null
+	cli_cfg="$(get_first_section_id "vnt2_cli")"
+	web_cfg="$(get_first_section_id "vnt2_web")"
+	printf 'cli=%s\nweb=%s\n' \
+		"$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)" \
+		"$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)" \
+		> "${VNT2_CLIENT_STATE}" 2>/dev/null
+}
+
+reconcile_client_exclusion() {
+	local cli_cfg web_cfg cli_now web_now cli_old web_old
 
 	cli_cfg="$(get_first_section_id "vnt2_cli")"
 	web_cfg="$(get_first_section_id "vnt2_web")"
 	[ -n "$cli_cfg" ] && [ -n "$web_cfg" ] || return 0
 
-	if [ "$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)" = "1" ] \
-		&& [ "$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)" = "1" ]; then
-		uci -q set ${CONF}.${cli_cfg}.enabled="0"
-		uci commit ${CONF} >/dev/null 2>&1
-		log_download "reconcile: vnt2_web is enabled, disabled vnt2_cli"
+	cli_now="$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)"
+	web_now="$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)"
+
+	if [ "$cli_now" != "1" ] || [ "$web_now" != "1" ]; then
+		# 只有一个启用，无需裁决，只更新状态
+		save_client_state
+		return 0
 	fi
+
+	cli_old="$(sed -n 's/^cli=//p' "${VNT2_CLIENT_STATE}" 2>/dev/null)"
+	web_old="$(sed -n 's/^web=//p' "${VNT2_CLIENT_STATE}" 2>/dev/null)"
+
+	if [ "$cli_old" = "0" ] && [ "$web_old" = "1" ]; then
+		# cli 是刚勾选的，web 原本就勾着 → cli 生效
+		uci -q set ${CONF}.${web_cfg}.enabled="0"
+		log_download "reconcile: cli 是刚勾选的，停用 vnt2_web"
+	else
+		# web 刚勾选 / 两个都刚勾选 / 没有历史记录 → web 生效
+		uci -q set ${CONF}.${cli_cfg}.enabled="0"
+		log_download "reconcile: web 生效，停用 vnt2_cli"
+	fi
+	uci commit ${CONF} >/dev/null 2>&1
+	save_client_state
 }
 
 reload_service() {
