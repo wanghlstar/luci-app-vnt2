@@ -1933,6 +1933,56 @@ toml_validate_server_config() {
 	return 0
 }
 
+# configure_network 早先无条件 delete + 重建，uci changes 于是永远非空，每次启动
+# 都触发一遍 network/firewall reload（实测 10 秒以上），把整个重启流程拖慢。
+# 先比对目标状态与现状，完全一致就直接返回。
+network_config_matches() {
+	local tun_name="$1" forward_list="$2" lan_zone="$3" wan_zone="$4"
+	local item rule rest src dest key want
+
+	[ "$(uci -q get network.VNT2)" = "interface" ] || return 1
+	[ "$(uci -q get network.VNT2.proto)" = "none" ] || return 1
+	[ "$(uci -q get network.VNT2.device)" = "$tun_name" ] || return 1
+	[ "$(uci -q get network.VNT2.ifname)" = "$tun_name" ] || return 1
+
+	[ "$(uci -q get firewall.vnt2zone)" = "zone" ] || return 1
+	for key in name input output forward network; do
+		case "$key" in
+			name|network) want="VNT2" ;;
+			*) want="ACCEPT" ;;
+		esac
+		[ "$(uci -q get firewall.vnt2zone.$key)" = "$want" ] || return 1
+	done
+	for key in masq mtu_fix; do
+		[ "$(uci -q get firewall.vnt2zone.$key)" = "1" ] || return 1
+	done
+
+	for item in "vnt2fwlan:VNT2:${lan_zone}" "vnt2fwwan:VNT2:${wan_zone}" \
+			"lanfwvnt2:${lan_zone}:VNT2" "wanfwvnt2:${wan_zone}:VNT2"; do
+		rule="${item%%:*}"
+		rest="${item#*:}"
+		src="${rest%%:*}"
+		dest="${rest#*:}"
+		case " $forward_list " in
+			*" $rule "*)
+				if [ -z "$src" ] || [ -z "$dest" ]; then
+					# zone 找不到时规则本应被删除
+					[ -z "$(uci -q get firewall.$rule)" ] || return 1
+				else
+					[ "$(uci -q get firewall.$rule)" = "forwarding" ] || return 1
+					[ "$(uci -q get firewall.$rule.src)" = "$src" ] || return 1
+					[ "$(uci -q get firewall.$rule.dest)" = "$dest" ] || return 1
+				fi
+			;;
+			*)
+				[ -z "$(uci -q get firewall.$rule)" ] || return 1
+			;;
+		esac
+	done
+
+	return 0
+}
+
 configure_network() {
 	local tun_name="$1"
 	local forward_list="$2"
@@ -1942,6 +1992,13 @@ configure_network() {
 	[ -n "$tun_name" ] || tun_name="vnt2-tun"
 	lan_zone="$(find_firewall_zone_name "lan" 2>/dev/null || true)"
 	wan_zone="$(find_firewall_zone_name "wan" 2>/dev/null || true)"
+
+	if network_config_matches "$tun_name" "$forward_list" "$lan_zone" "$wan_zone"; then
+		# Zone forwarding rules above only take effect with IP forwarding
+		# enabled, regardless of whether NAT/masq is active.
+		sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+		return 0
+	fi
 
 	uci -q delete network.VNT2
 	uci set network.VNT2='interface'
@@ -2287,6 +2344,10 @@ bind_port_of() {
 # True when the port still has non-LISTEN TCP sockets (e.g. TIME_WAIT left
 # behind by a killed process). vnts2/vnt2_web bind without SO_REUSEADDR, so
 # such leftovers make the next bind fail with "Address in use" for up to 60s.
+# 只统计 TIME_WAIT：vnts2/vnt2_web 都没设 SO_REUSEADDR，TIME_WAIT 会让
+# bind 返回 EADDRINUSE。其它状态（ESTABLISHED/CLOSE_WAIT/FIN_WAIT…）要么属于
+# 仍活着的进程、要么不阻止绑定，早前版本把它们也当作 stale，导致有设备在线或
+# 浏览器在轮询时就一直空等到超时（实测白等 20~30 秒）。
 port_has_stale_tcp() {
 	local port="$1"
 
@@ -2294,7 +2355,7 @@ port_has_stale_tcp() {
 	awk -v h="$(printf '%04X' "$port")" '
 		FNR>1 {
 			split($2, a, ":")
-			if (toupper(a[2]) == h && $4 != "0A") { found = 1; exit }
+			if (toupper(a[2]) == h && $4 == "06") { found = 1; exit }
 		}
 		END { exit(found ? 0 : 1) }
 	' /proc/net/tcp /proc/net/tcp6 2>/dev/null
