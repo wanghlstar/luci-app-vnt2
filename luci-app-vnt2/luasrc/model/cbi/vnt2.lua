@@ -32,10 +32,9 @@ end
 -- 两个 Flag 各自的 write 钩子都会去清对方，同页两个都勾选时两个钩子都触发，
 -- 后处理的字段覆盖先处理的——section 创建顺序是 cli→web→server，于是 web
 -- 总是赢，和提示文字、init.d 里的运行时逻辑（cli 优先）都不一致。
--- 这里在 on_after_save（uci:save 之后、commit 之前）统一收口，保证无论勾选
--- 顺序如何结果都确定。
--- 必须定义在 m.on_after_save 之前：Lua 的 local function 在后面定义时，
--- 前面的闭包捕获到的是 nil，调用会直接报错、裁决根本不执行。
+-- 这里在 on_before_save 统一收口，保证无论勾选顺序如何结果都确定。
+-- 必须定义在引用它之前：Lua 的 local function 在后面定义时，前面的闭包
+-- 捕获到的是 nil，调用会直接报错、裁决根本不执行。
 local reconcile_client_exclusion
 
 function reconcile_client_exclusion()
@@ -51,10 +50,13 @@ function reconcile_client_exclusion()
 	end
 end
 
-m.on_after_save = function(self)
-	reconcile_client_exclusion()
-	export_toml_from_uci(self)
-end
+-- 互斥裁决必须放在 uci:save() 之前。Map.apply_on_parse 默认为 nil，此时
+-- on_after_save 阶段并不会 commit，而是由模板发 XHR 到另一个请求里做
+-- uci:apply()——那个请求用新的 cursor 读 /tmp/.uci/<config> savefile。
+-- 在 on_after_save 里 uci:set() 已经晚了：save() 先跑完，改动进不了 savefile，
+-- 会被完全丢弃（表现为配置里两个 enabled 都是 1）。
+m.on_before_save = reconcile_client_exclusion
+m.on_after_save = export_toml_from_uci
 m.on_after_commit = export_toml_from_uci
 
 local function trim(v)
