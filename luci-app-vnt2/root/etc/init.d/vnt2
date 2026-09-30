@@ -2416,6 +2416,15 @@ start_cli_instance() {
 		return 0
 	fi
 
+	# vnt2_cli 与 vnt2_web 共用一套 TOML 和设备标识，同时运行会被服务端以
+	# 重复 IP 拒绝注册。web 优先（与 CBI 侧“两个都勾选时保留 web”一致）。
+	local web_enabled
+	config_get_bool web_enabled "$(get_first_section_id "vnt2_web")" "enabled" "0"
+	if [ "$web_enabled" = "1" ]; then
+		log_cli 'vnt2_web is enabled, skip vnt2_cli (mutually exclusive)'
+		return 0
+	fi
+
 	log_cli 'start requested'
 	config_get cli_bin "$cfg" "vnt2_cli_bin" "/usr/bin/vnt2_cli"
 	config_get ctrl_bin "$cfg" "vnt2_ctrl_bin" "/usr/bin/vnt2_ctrl"
@@ -2583,16 +2592,6 @@ start_web_instance() {
 			return 1
 		;;
 	esac
-
-	# vnt2_cli and vnt2_web share one TOML and one device identity; running
-	# both makes the server reject the second registration with a duplicate
-	# IP. The CLI takes precedence when both are enabled.
-	local cli_enabled
-	config_get_bool cli_enabled "$(get_first_section_id "vnt2_cli")" "enabled" "0"
-	if [ "$cli_enabled" = "1" ]; then
-		log_web 'vnt2_cli is enabled, skip vnt2_web (mutually exclusive)'
-		return 0
-	fi
 
 	# 仅用于生成并持久化令牌；启动参数由下面的 runner 脚本动态读取。
 	web_token="$(ensure_web_token "$cfg")"
@@ -2897,10 +2896,9 @@ replay_client_network() {
 	configure_cli_tunnel_firewall "${VNT2_TUNNEL_PORT}"
 }
 
-# cli 与 web 互斥的最终收口：cli 优先。
-# CBI 侧两个 Flag 的 write 钩子都会去清对方，同页两个都勾选时结果取决于字段
-# 处理顺序，不可靠。init.d 是运行时的真相来源，且“保存并应用”必然触发 reload，
-# 在这里把配置改回来，UI 下次渲染读到的就是一致的状态。
+# cli 与 web 互斥的兜底收口：web 优先。
+# CBI 侧两个 Flag 的 write 钩子已经按“刚勾选才清对方”处理过，正常不会两个
+# 同时为 1；这道兜底主要覆盖手工改配置的情况，保证配置与运行时一致。
 reconcile_client_exclusion() {
 	local cli_cfg web_cfg
 
@@ -2910,9 +2908,9 @@ reconcile_client_exclusion() {
 
 	if [ "$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)" = "1" ] \
 		&& [ "$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)" = "1" ]; then
-		uci -q set ${CONF}.${web_cfg}.enabled="0"
+		uci -q set ${CONF}.${cli_cfg}.enabled="0"
 		uci commit ${CONF} >/dev/null 2>&1
-		log_download "reconcile: vnt2_cli is enabled, disabled vnt2_web"
+		log_download "reconcile: vnt2_web is enabled, disabled vnt2_cli"
 	fi
 }
 
@@ -2939,8 +2937,8 @@ reload_service() {
 	[ -n "$web_cfg" ] && config_get_bool web_en "$web_cfg" "enabled" "0"
 	[ -n "$srv_cfg" ] && config_get_bool srv_en "$srv_cfg" "enabled" "0"
 
-	# vnt2_cli 与 vnt2_web 共用一套 TOML 且互斥，cli 优先
-	[ "$cli_en" = "1" ] && web_en=0
+	# vnt2_cli 与 vnt2_web 共用一套 TOML 且互斥，web 优先
+	[ "$web_en" = "1" ] && cli_en=0
 
 	pidof vnt2_cli >/dev/null 2>&1 && run_cli=1
 	pidof vnt2_web >/dev/null 2>&1 && run_web=1

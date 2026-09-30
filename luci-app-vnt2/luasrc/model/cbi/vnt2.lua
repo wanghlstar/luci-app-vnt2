@@ -28,33 +28,45 @@ local function export_toml_from_uci(self)
 	toml.export_uci_to_toml(self.uci)
 end
 
--- cli 与 web 互斥的最终裁决：cli 优先。
--- 两个 Flag 各自的 write 钩子都会去清对方，同页两个都勾选时两个钩子都触发，
--- 后处理的字段覆盖先处理的——section 创建顺序是 cli→web→server，于是 web
--- 总是赢，和提示文字、init.d 里的运行时逻辑（cli 优先）都不一致。
--- 这里在 on_before_save 统一收口，保证无论勾选顺序如何结果都确定。
--- 必须定义在引用它之前：Lua 的 local function 在后面定义时，前面的闭包
--- 捕获到的是 nil，调用会直接报错、裁决根本不执行。
-local reconcile_client_exclusion
+-- cli 与 web 互斥：保存前先快照两者的 enabled，供各自的 write 钩子判断
+-- “是否刚被勾选”（0→1）。必须在任何写入之前取，否则先跑的钩子会污染后跑的
+-- 读到的旧值。on_parse 在 Node.parse（真正写表单值）之前执行，正合适。
+local cli_web_was = {}
 
-function reconcile_client_exclusion()
-	local cli_sec = m.uci:get_first("vnt2", "vnt2_cli")
-	local web_sec = m.uci:get_first("vnt2", "vnt2_web")
+m.on_parse = function(self)
+	local u = self.uci
+	local cs = u:get_first("vnt2", "vnt2_cli")
+	local ws = u:get_first("vnt2", "vnt2_web")
+	cli_web_was.cli = (cs and u:get("vnt2", cs, "enabled")) or "0"
+	cli_web_was.web = (ws and u:get("vnt2", ws, "enabled")) or "0"
+end
 
-	if not cli_sec or not web_sec then
+-- 互斥最终收口：刚勾选的那个生效；两个都是刚勾选则 web 优先。
+-- 两个 Flag 的 write 钩子已各自清过对方，但浏览器端的互斥脚本若没生效，
+-- 后写的字段会拿表单值把先写的清理结果覆盖回去（表现为两个 enabled 都是 1）。
+-- on_before_save 在两次 write 之后、uci:save() 之前，按快照重新裁决，
+-- 裁决结果随 savefile 一起落到 apply 请求里。
+local function reconcile_client_exclusion()
+	local u = m.uci
+	local cs = u:get_first("vnt2", "vnt2_cli")
+	local ws = u:get_first("vnt2", "vnt2_web")
+	if not cs or not ws then
 		return
 	end
 
-	if m.uci:get("vnt2", cli_sec, "enabled") == "1" then
-		m.uci:set("vnt2", web_sec, "enabled", "0")
+	if u:get("vnt2", cs, "enabled") ~= "1" or u:get("vnt2", ws, "enabled") ~= "1" then
+		return		-- 只有一个启用，无需处理
+	end
+
+	if cli_web_was.cli ~= "1" and cli_web_was.web == "1" then
+		-- cli 是刚勾选的，web 原本就勾着 → cli 生效
+		u:set("vnt2", ws, "enabled", "0")
+	else
+		-- web 刚勾选 / 两个都刚勾选 / 原本就两个都勾 → web 生效
+		u:set("vnt2", cs, "enabled", "0")
 	end
 end
 
--- 互斥裁决必须放在 uci:save() 之前。Map.apply_on_parse 默认为 nil，此时
--- on_after_save 阶段并不会 commit，而是由模板发 XHR 到另一个请求里做
--- uci:apply()——那个请求用新的 cursor 读 /tmp/.uci/<config> savefile。
--- 在 on_after_save 里 uci:set() 已经晚了：save() 先跑完，改动进不了 savefile，
--- 会被完全丢弃（表现为配置里两个 enabled 都是 1）。
 m.on_before_save = reconcile_client_exclusion
 m.on_after_save = export_toml_from_uci
 m.on_after_commit = export_toml_from_uci
@@ -1568,7 +1580,7 @@ local mutual_exclusion_tip = s:taboption("general", DummyValue, "_mutual_exclusi
 mutual_exclusion_tip.rawhtml = true
 mutual_exclusion_tip.cfgvalue = function()
 	return [[
-<div class="cbi-value-description">CLI 客户端与 Web 客户端互斥（共用同一配置和设备标识，同时运行会被服务端拒绝注册）；若同时启用，vnt2_cli 优先运行，vnt2_web 将跳过启动。</div>
+<div class="cbi-value-description">CLI 客户端与 Web 客户端互斥（共用同一配置和设备标识，同时运行会被服务端拒绝注册）。勾选其中一个，另一个会自动取消；若同时勾选两个，则保留 Web 客户端。</div>
 ]] .. render_mutual_exclusion_script()
 end
 
@@ -1577,7 +1589,9 @@ enabled.rmempty = false
 enabled.default = "0"
 enabled.write = function(self, section, value)
 	self.map.uci:set(self.map.config, section, self.option, value)
-	if value == "1" then
+	-- 只有“刚勾选”（0→1）才清掉对方。原本就勾选的不能清：同页两个都勾选时
+	-- 两个钩子都会触发，若不区分就会互相覆盖，变成后处理的字段赢。
+	if value == "1" and cli_web_was.cli ~= "1" then
 		set_sections_option_by_type(self.map.config, "vnt2_web", "enabled", "0")
 	end
 end
@@ -2073,10 +2087,11 @@ w:tab("upload", translate("上传程序"))
 local web_enabled = w:taboption("general", Flag, "enabled", translate("启用web 客户端"))
 web_enabled.rmempty = false
 web_enabled.default = "0"
--- 这里不再清 vnt2_cli：同页两个都勾选时它会覆盖 cli 钩子的结果，导致实际
--- 变成 web 优先。互斥改由 reconcile_client_exclusion() 在保存后统一裁决。
 web_enabled.write = function(self, section, value)
 	self.map.uci:set(self.map.config, section, self.option, value)
+	if value == "1" and cli_web_was.web ~= "1" then
+		set_sections_option_by_type(self.map.config, "vnt2_cli", "enabled", "0")
+	end
 end
 
 local web_restart = w:taboption("general", Button, "_restart_web", translate("重启客户端"))
