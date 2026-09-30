@@ -2897,12 +2897,34 @@ replay_client_network() {
 	configure_cli_tunnel_firewall "${VNT2_TUNNEL_PORT}"
 }
 
+# cli 与 web 互斥的最终收口：cli 优先。
+# CBI 侧两个 Flag 的 write 钩子都会去清对方，同页两个都勾选时结果取决于字段
+# 处理顺序，不可靠。init.d 是运行时的真相来源，且“保存并应用”必然触发 reload，
+# 在这里把配置改回来，UI 下次渲染读到的就是一致的状态。
+reconcile_client_exclusion() {
+	local cli_cfg web_cfg
+
+	cli_cfg="$(get_first_section_id "vnt2_cli")"
+	web_cfg="$(get_first_section_id "vnt2_web")"
+	[ -n "$cli_cfg" ] && [ -n "$web_cfg" ] || return 0
+
+	if [ "$(uci -q get ${CONF}.${cli_cfg}.enabled 2>/dev/null)" = "1" ] \
+		&& [ "$(uci -q get ${CONF}.${web_cfg}.enabled 2>/dev/null)" = "1" ]; then
+		uci -q set ${CONF}.${web_cfg}.enabled="0"
+		uci commit ${CONF} >/dev/null 2>&1
+		log_download "reconcile: vnt2_cli is enabled, disabled vnt2_web"
+	fi
+}
+
 reload_service() {
 	local cli_cfg web_cfg srv_cfg
 	local cli_en=0 web_en=0 srv_en=0
 	local run_cli=0 run_web=0 run_srv=0
 	local cli_fp_now srv_fp_now cli_fp_old srv_fp_old
 	local set_changed=0 pid
+
+	# 先把互斥配置收口，再据此决定起停
+	reconcile_client_exclusion
 
 	# ---- 重新导出 TOML：随后被重启的进程会读到新内容 ----
 	export_toml_from_uci >/dev/null 2>&1
