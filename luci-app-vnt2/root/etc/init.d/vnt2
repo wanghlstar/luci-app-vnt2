@@ -2624,7 +2624,10 @@ start_web_instance() {
     log_web "using ${web_bin} on ${web_host}:${web_port}, conf=${WEB_CONF_FILE}"
 	ensure_web_config_exposure "${WEB_CONF_FILE}"
 
-	wait_bind_ports_ready "$(bind_port_of "${web_host}:${web_port}")"
+	# 这里不等 TIME_WAIT：vnt2_web 只暴露一个 HTTP API 端口，连接几乎全部来自
+	# 浏览器轮询；Web UI 开着时 kill 旧进程会产生几十条 TIME_WAIT，等下去要几十秒
+	# （实测 28 秒），把整个启动流程堵死。procd 已配 respawn 3600 5 30，万一真的
+	# 绑不上会 5 秒后重试，不必在这里阻塞。
 
 	# procd_open_instance 只在 start_service（经 rc.common 的 rc_procd 包装）
 	# 里才会提交实例定义；reload_service 和 EXTRA_COMMANDS 里的调用不会提交。
@@ -2941,6 +2944,7 @@ reload_service() {
 
 	if [ "$set_changed" = "1" ]; then
 		log_download "reload: instance set changed cli=${cli_en}/${run_cli} web=${web_en}/${run_web} srv=${srv_en}/${run_srv}, re-registering"
+
 		VNT2_NET_BATCH=1
 		start
 		save_client_fingerprint

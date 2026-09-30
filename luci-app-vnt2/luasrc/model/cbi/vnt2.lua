@@ -28,7 +28,10 @@ local function export_toml_from_uci(self)
 	toml.export_uci_to_toml(self.uci)
 end
 
-m.on_after_save = export_toml_from_uci
+m.on_after_save = function(self)
+	reconcile_client_exclusion()
+	export_toml_from_uci(self)
+end
 m.on_after_commit = export_toml_from_uci
 
 local function trim(v)
@@ -112,6 +115,25 @@ local function set_sections_option_by_type(config, stype, option, value)
 	m.uci:foreach(config, stype, function(section)
 		m.uci:set(config, section[".name"], option, value)
 	end)
+end
+
+-- cli 与 web 互斥的最终裁决：cli 优先。
+-- 两个 Flag 各自的 write 钩子都会去清对方，同页两个都勾选时两个钩子都触发，
+-- 后处理的字段覆盖先处理的——section 创建顺序是 cli→web→server，于是 web
+-- 总是赢，和提示文字、init.d 里的运行时逻辑（cli 优先）都不一致。
+-- 这里在 on_after_save（uci:save 之后、commit 之前）统一收口，保证无论勾选
+-- 顺序如何结果都确定。
+local function reconcile_client_exclusion()
+	local cli_sec = m.uci:get_first("vnt2", "vnt2_cli")
+	local web_sec = m.uci:get_first("vnt2", "vnt2_web")
+
+	if not cli_sec or not web_sec then
+		return
+	end
+
+	if m.uci:get("vnt2", cli_sec, "enabled") == "1" then
+		m.uci:set("vnt2", web_sec, "enabled", "0")
+	end
 end
 
 local function render_mutual_exclusion_script()
@@ -2044,11 +2066,10 @@ w:tab("upload", translate("上传程序"))
 local web_enabled = w:taboption("general", Flag, "enabled", translate("启用web 客户端"))
 web_enabled.rmempty = false
 web_enabled.default = "0"
+-- 这里不再清 vnt2_cli：同页两个都勾选时它会覆盖 cli 钩子的结果，导致实际
+-- 变成 web 优先。互斥改由 reconcile_client_exclusion() 在保存后统一裁决。
 web_enabled.write = function(self, section, value)
 	self.map.uci:set(self.map.config, section, self.option, value)
-	if value == "1" then
-		set_sections_option_by_type(self.map.config, "vnt2_cli", "enabled", "0")
-	end
 end
 
 local web_restart = w:taboption("general", Button, "_restart_web", translate("重启客户端"))
